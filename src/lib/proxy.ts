@@ -84,6 +84,7 @@ export async function proxyRequest(
 
   let lastError: string | undefined;
   let switched = false;
+  const switchChain: string[] = [];
 
   // Each configured endpoint represents one URL + API key pair. Try every
   // available pair so a 429 can fail over without changing the model.
@@ -114,6 +115,7 @@ export async function proxyRequest(
 
       clearTimeout(timeoutId);
       debugLog(`[PROXY] response status=${response.status}`);
+      switchChain.push(`${endpoint.name} (${response.status})`);
 
       // 429 can fail over for this request, but it does not mean the endpoint
       // is unhealthy. Only HTTP 500 marks an endpoint unhealthy.
@@ -147,6 +149,7 @@ export async function proxyRequest(
         success: response.status < 400,
         switched,
         error: lastError,
+        switch_chain: switchChain.join(' -> '),
         model: requestInfo.model,
         stream: requestInfo.stream,
         client_ip: clientIp,
@@ -203,7 +206,7 @@ export async function proxyRequest(
               total_tokens: totalTokens,
             };
             addLog(completed);
-            emitLog({ ...completed, timestamp: Date.now() });
+            emitLog({ ...completed, created_at: Math.floor(Date.now() / 1000) });
           },
         }));
 
@@ -216,7 +219,7 @@ export async function proxyRequest(
 
       const logEntry = { ...baseLog };
       addLog(logEntry);
-      emitLog({ ...logEntry, timestamp: Date.now() });
+      emitLog({ ...logEntry, created_at: Math.floor(Date.now() / 1000) });
 
       return new Response(response.body, {
         status: response.status,
@@ -226,6 +229,7 @@ export async function proxyRequest(
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       debugLog(`[PROXY] error: ${errorMessage}`);
+      switchChain.push(`${endpoint.name} (network error)`);
       markUnhealthy(endpoint.id);
       lastError = errorMessage;
       switched = true;
@@ -245,9 +249,10 @@ export async function proxyRequest(
     success: false,
     switched,
     error: `All endpoints failed: ${lastError}`,
+    switch_chain: switchChain.join(' -> '),
   };
   addLog(logEntry);
-  emitLog({ ...logEntry, timestamp: Date.now() });
+  emitLog({ ...logEntry, created_at: Math.floor(Date.now() / 1000) });
 
   return new Response(JSON.stringify({ error: 'All endpoints failed', details: lastError }), {
     status: 503,

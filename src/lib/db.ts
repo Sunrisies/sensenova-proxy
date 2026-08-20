@@ -58,6 +58,7 @@ export interface RequestLog {
   completion_tokens?: number;
   total_tokens?: number;
   cost?: number;
+  switch_chain?: string;
   created_at: number;
 }
 
@@ -108,6 +109,7 @@ function getDb(): Database.Database {
         completion_tokens INTEGER,
         total_tokens INTEGER,
         cost REAL,
+        switch_chain TEXT,
         created_at INTEGER DEFAULT (unixepoch()),
         FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE
       );
@@ -128,6 +130,7 @@ function getDb(): Database.Database {
       completion_tokens: 'ALTER TABLE request_logs ADD COLUMN completion_tokens INTEGER',
       total_tokens: 'ALTER TABLE request_logs ADD COLUMN total_tokens INTEGER',
       cost: 'ALTER TABLE request_logs ADD COLUMN cost REAL',
+      switch_chain: 'ALTER TABLE request_logs ADD COLUMN switch_chain TEXT',
     };
     for (const [column, statement] of Object.entries(migrations)) {
       if (!existing.has(column)) db.exec(statement);
@@ -238,26 +241,30 @@ export function addLog(log: Omit<RequestLog, 'id' | 'created_at'>): void {
   const now = Math.floor(Date.now() / 1000);
 
   db.prepare(`
-    INSERT INTO request_logs (id, endpoint_id, endpoint_name, method, path, status, duration, success, switched, error, model, stream, client_ip, first_byte_ms, prompt_tokens, completion_tokens, total_tokens, cost, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO request_logs (id, endpoint_id, endpoint_name, method, path, status, duration, success, switched, error, model, stream, client_ip, first_byte_ms, prompt_tokens, completion_tokens, total_tokens, cost, switch_chain, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, log.endpoint_id, log.endpoint_name, log.method, log.path, log.status,
     log.duration, log.success ? 1 : 0, log.switched ? 1 : 0, log.error ?? null,
     log.model ?? null, log.stream ? 1 : 0, log.client_ip ?? null,
     log.first_byte_ms ?? null, log.prompt_tokens ?? null,
-    log.completion_tokens ?? null, log.total_tokens ?? null, log.cost ?? null, now,
+    log.completion_tokens ?? null, log.total_tokens ?? null, log.cost ?? null,
+    log.switch_chain ?? null, now,
   );
 }
 
-export function getRecentLogs(limit: number = 100): RequestLog[] {
+export function getLogs(page: number, pageSize: number): { logs: RequestLog[]; total: number } {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM request_logs ORDER BY created_at DESC LIMIT ?').all(limit) as Record<string, unknown>[];
-  return rows.map(r => ({
+  const total = (db.prepare('SELECT COUNT(*) AS count FROM request_logs').get() as { count: number }).count;
+  const rows = db.prepare('SELECT * FROM request_logs ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?')
+    .all(pageSize, (page - 1) * pageSize) as Record<string, unknown>[];
+  const logs = rows.map(r => ({
     ...r,
     success: Boolean(r.success),
     switched: Boolean(r.switched),
     stream: Boolean(r.stream),
   })) as RequestLog[];
+  return { logs, total };
 }
 
 function normalizeEndpoint(row: Record<string, unknown>): Endpoint {

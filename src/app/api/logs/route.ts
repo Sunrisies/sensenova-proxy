@@ -1,14 +1,13 @@
 import { NextRequest } from 'next/server';
-import { getRecentLogs, addLog } from '@/lib/db';
-import { onLog } from '@/lib/proxy';
+import { getLogs, addLog } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
-  const limit = parseInt(searchParams.get('limit') ?? '50', 10);
-  const logs = getRecentLogs(limit);
-  return Response.json(logs);
+  const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10));
+  const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get('pageSize') ?? '20', 10)));
+  return Response.json({ page, pageSize, ...getLogs(page, pageSize) });
 }
 
 // POST for testing - adds a manual log entry

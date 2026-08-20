@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -23,18 +23,28 @@ interface LogEntry {
   completion_tokens?: number;
   total_tokens?: number;
   cost?: number;
+  switch_chain?: string;
   created_at: number;
+}
+
+interface LogsResponse {
+  logs: LogEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export default function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [connected, setConnected] = useState(false);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const logsEndRef = useRef<HTMLDivElement>(null);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const pageSize = 20;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   useEffect(() => {
     // Fetch initial logs
-    fetchLogs();
+    fetchLogs(1);
 
     // Connect to SSE stream
     const eventSource = new EventSource("/api/logs/stream");
@@ -46,7 +56,10 @@ export default function LogsPage() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === "connected") return;
-        setLogs((prev) => [data, ...prev].slice(0, 200));
+        if (page === 1) {
+          setLogs((prev) => [data, ...prev.filter((log) => log.id !== data.id)].slice(0, pageSize));
+          setTotal((value) => value + 1);
+        }
       } catch {
         // Ignore parse errors
       }
@@ -56,26 +69,22 @@ export default function LogsPage() {
       eventSource.close();
       setConnected(false);
     };
-  }, []);
+  }, [page]);
 
-  useEffect(() => {
-    if (autoScroll && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [logs, autoScroll]);
-
-  async function fetchLogs() {
+  async function fetchLogs(targetPage: number) {
     try {
-      const res = await fetch("/api/logs?limit=100");
-      const data = await res.json();
-      setLogs(data);
+      const res = await fetch(`/api/logs?page=${targetPage}&pageSize=${pageSize}`);
+      const data: LogsResponse = await res.json();
+      setLogs(data.logs);
+      setTotal(data.total);
+      setPage(data.page);
     } catch {
       console.error("Failed to fetch logs");
     }
   }
 
   function formatTime(ts: number) {
-    return new Date(ts * 1000).toLocaleTimeString("zh-CN");
+    return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
   }
 
   return (
@@ -86,15 +95,7 @@ export default function LogsPage() {
           <Badge variant={connected ? "default" : "destructive"}>
             {connected ? "已连接" : "未连接"}
           </Badge>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={autoScroll}
-              onChange={(e) => setAutoScroll(e.target.checked)}
-              className="rounded"
-            />
-            自动滚动
-          </label>
+          <span className="text-sm text-muted-foreground">共 {total} 条，最新在前</span>
         </div>
       </div>
 
@@ -121,6 +122,7 @@ export default function LogsPage() {
                   <div className="mt-2 grid gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
                     <span>入站: <code>{log.path}</code></span>
                     <span>端点: {log.endpoint_name}</span>
+                    {log.switch_chain && <span className="sm:col-span-2">调用链路: {log.switch_chain}</span>}
                     <span>客户端: {log.client_ip || "未知"}</span>
                     <span>方法: {log.method}</span>
                     <span>首字: {log.first_byte_ms != null ? `${(log.first_byte_ms / 1000).toFixed(2)}s` : "-"}</span>
@@ -131,11 +133,29 @@ export default function LogsPage() {
                   {log.error && <div className="mt-2 truncate text-xs text-destructive" title={log.error}>{log.error}</div>}
                 </div>
               ))}
-              <div ref={logsEndRef} />
             </div>
           )}
         </CardContent>
       </Card>
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">第 {page} / {totalPages} 页</span>
+        <div className="flex gap-2">
+          <button
+            className="rounded border px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={page <= 1}
+            onClick={() => fetchLogs(page - 1)}
+          >
+            上一页
+          </button>
+          <button
+            className="rounded border px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={page >= totalPages}
+            onClick={() => fetchLogs(page + 1)}
+          >
+            下一页
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
