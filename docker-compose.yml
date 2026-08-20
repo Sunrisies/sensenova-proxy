@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  sensenova-proxy:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - proxy-data:/app/data
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+
+volumes:
+  proxy-data:
