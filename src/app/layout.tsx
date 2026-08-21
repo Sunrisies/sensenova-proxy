@@ -30,6 +30,9 @@ export default function RootLayout({
                     <a href="/endpoints" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
                       端点管理
                     </a>
+                    <a href="/stats" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+                      用量统计
+                    </a>
                     <a href="/logs" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
                       实时日志
                     </a>
@@ -41,7 +44,7 @@ export default function RootLayout({
               </div>
             </div>
           </nav>
-          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <main className="mx-auto w-full max-w-[1720px] px-3 py-5 sm:px-5 sm:py-6 lg:px-6">
             {children}
           </main>
         </div>

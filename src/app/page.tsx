@@ -100,7 +100,7 @@ export default function Dashboard() {
   const usageById = new Map(usage.map((item) => [item.id, item]));
 
   return (
-    <div className="min-h-[calc(100vh-8rem)] space-y-7 rounded-2xl bg-slate-50 p-5 text-slate-900 shadow-sm sm:p-8">
+    <div className="min-h-[calc(100vh-7rem)] space-y-5 rounded-2xl bg-slate-50 p-3 text-slate-900 shadow-sm sm:p-5">
       <div className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end">
         <div>
           <div className="text-[11px] uppercase tracking-[0.22em] text-sky-400">SenseNova Proxy / Overview</div>
@@ -129,18 +129,18 @@ export default function Dashboard() {
       {status.endpoints.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-700 py-16 text-center text-slate-500">暂无端点，请先添加端点</div>
       ) : (
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {status.endpoints.map((endpoint) => {
             const endpointUsage = usageById.get(endpoint.id);
             const models = endpointUsage?.model_remaining_percent ?? {};
             return (
               <Card key={endpoint.id} className="overflow-hidden border-slate-200 bg-white text-slate-900 shadow-lg shadow-slate-200/60">
-                <CardContent className="p-5 sm:p-6">
-                  <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-5">
+                <CardContent className="p-4">
+                  <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-4">
                     <div className="flex min-w-0 items-start gap-3">
                       <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${endpoint.healthy ? "bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,0.12)]" : "bg-rose-400 shadow-[0_0_0_4px_rgba(251,113,133,0.12)]"}`} />
                       <div className="min-w-0">
-                        <h2 className="truncate text-lg font-semibold text-slate-900">{endpoint.name}</h2>
+                        <h2 className="truncate text-base font-semibold text-slate-900">{endpoint.name}</h2>
                         <p className="mt-1 truncate text-xs text-slate-500">{endpoint.url} · P{endpoint.priority} · W{endpoint.weight}</p>
                       </div>
                     </div>
@@ -154,7 +154,7 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  <div className="mt-5 flex items-center justify-between text-xs">
+                  <div className="mt-4 flex items-center justify-between text-xs">
                     <strong className="text-sm text-slate-800">模型剩余配额</strong>
                     <span className="text-slate-500">{endpointUsage?.authorization === "valid" ? formatExpiry(endpointUsage.expires_at) : "需要配额授权"}</span>
                   </div>
@@ -162,12 +162,12 @@ export default function Dashboard() {
                   {endpointUsage?.authorization === "invalid" && <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{endpointUsage.error ?? "请在端点管理中重新授权"}</div>}
                   {endpointUsage?.authorization === "not_configured" && <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">请在端点管理中配置该账号的配额授权</div>}
                   {endpointUsage?.authorization === "valid" && (
-                    <div className="mt-4 space-y-4">
+                    <div className="mt-4 space-y-3">
                       {Object.entries(models).map(([model, value]) => {
                         const percent = Math.max(0, Math.min(100, Math.round(value * 10) / 10));
                         return (
                           <div key={model}>
-                        <div className="mb-2 flex items-center justify-between text-sm">
+                            <div className="mb-1.5 flex items-center justify-between text-xs">
                               <span className="truncate pr-4 text-slate-700">{model}</span>
                               <span className="shrink-0 tabular-nums font-medium text-slate-900">{percent}%</span>
                             </div>
@@ -181,7 +181,7 @@ export default function Dashboard() {
                     </div>
                   )}
 
-                  <div className="mt-5 flex items-center justify-between border-t border-slate-200 pt-4 text-[11px] text-slate-500">
+                  <div className="mt-4 flex items-center justify-between border-t border-slate-200 pt-3 text-[10px] text-slate-500">
                     <span>错误数 {endpoint.error_count}</span>
                     <span>{Object.keys(models).length} 个模型</span>
                     <span>{endpoint.enabled ? "已启用" : "已禁用"}</span>

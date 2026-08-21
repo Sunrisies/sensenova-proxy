@@ -272,7 +272,7 @@ export default function EndpointsPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">端点管理</h1>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -368,51 +368,42 @@ export default function EndpointsPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {endpoints.map((ep) => {
             const panel = getPanel(ep.id);
             return (
-              <Card key={ep.id}>
+              <Card key={ep.id} className="h-fit overflow-hidden">
                 <CardContent className="p-4">
                   {/* Endpoint Info Row */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-3">
                       <Badge variant={ep.healthy ? "default" : "destructive"}>
                         {ep.healthy ? "健康" : "不健康"}
                       </Badge>
-                      <div>
-                        <div className="font-medium">{ep.name}</div>
-                        <div className="text-sm text-muted-foreground">{ep.url}</div>
-                        <div className="text-xs text-muted-foreground">Key: {ep.api_key}</div>
-                        <div className="text-xs text-muted-foreground">配额授权: {ep.quota_authorization === "valid" ? "已配置" : "未配置"}</div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium">{ep.name}</div>
+                        <div className="mt-1 truncate text-xs text-muted-foreground" title={ep.url}>{ep.url}</div>
+                        <div className="mt-1 truncate text-xs text-muted-foreground" title={ep.api_key}>Key: {ep.api_key}</div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-muted-foreground">
-                        P:{ep.priority} W:{ep.weight}
-                      </span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => updatePanel(ep.id, { expanded: !panel.expanded })}
-                      >
-                        {panel.expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    <div className="flex items-center justify-between border-y py-2 text-xs text-muted-foreground">
+                      <span>P:{ep.priority} · W:{ep.weight}</span>
+                      <span>配额: {ep.quota_authorization === "valid" ? "已配置" : "未配置"}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button variant="outline" size="sm" onClick={() => openEdit(ep)}>编辑</Button>
+                      <Button variant="outline" size="sm" onClick={() => openAuthorization(ep)}>配额授权</Button>
+                      <Button variant="outline" size="sm" onClick={() => updatePanel(ep.id, { expanded: !panel.expanded })}>
+                        {panel.expanded ? <ChevronUp className="mr-1 h-4 w-4" /> : <ChevronDown className="mr-1 h-4 w-4" />}
+                        {panel.expanded ? "收起" : "模型测试"}
                       </Button>
-                       <Button variant="outline" size="sm" onClick={() => openEdit(ep)}>
-                         编辑
-                       </Button>
-                       <Button variant="outline" size="sm" onClick={() => openAuthorization(ep)}>
-                         配额授权
-                       </Button>
-                      <Button variant="destructive" size="sm" onClick={() => handleDelete(ep.id)}>
-                        删除
-                      </Button>
+                      <Button variant="destructive" size="sm" onClick={() => handleDelete(ep.id)}>删除</Button>
                     </div>
                   </div>
 
                   {/* Expanded Panel: Models & Test */}
                   {panel.expanded && (
-                    <div className="mt-4 pt-4 border-t space-y-3">
+                    <div className="mt-4 border-t pt-4 space-y-3">
                       <div className="flex items-center gap-2">
                         <Button
                           variant="outline"

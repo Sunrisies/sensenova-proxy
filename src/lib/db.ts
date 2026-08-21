@@ -315,6 +315,74 @@ export function getLogs(page: number, pageSize: number): { logs: RequestLog[]; t
   return { logs, total };
 }
 
+export interface UsageStatsFilters {
+  since?: number;
+  endpointId?: string;
+  model?: string;
+}
+
+export interface UsageStats {
+  total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  by_model: Array<{
+    model: string;
+    requests: number;
+    successful_requests: number;
+    failed_requests: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  }>;
+}
+
+export function getUsageStats(filters: UsageStatsFilters = {}): UsageStats {
+  const db = getDb();
+  const conditions = ['model IS NOT NULL', 'model != \'\''];
+  const values: unknown[] = [];
+  if (filters.since !== undefined) { conditions.push('created_at >= ?'); values.push(filters.since); }
+  if (filters.endpointId) { conditions.push('endpoint_id = ?'); values.push(filters.endpointId); }
+  if (filters.model) { conditions.push('model = ?'); values.push(filters.model); }
+  const where = conditions.join(' AND ');
+  const summary = db.prepare(`
+    SELECT COUNT(*) AS total_requests,
+      SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successful_requests,
+      SUM(CASE WHEN success = 1 THEN 0 ELSE 1 END) AS failed_requests,
+      COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+      COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens
+    FROM request_logs WHERE ${where}
+  `).get(...values) as Record<string, number>;
+  const rows = db.prepare(`
+    SELECT model,
+      COUNT(*) AS requests,
+      SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successful_requests,
+      SUM(CASE WHEN success = 1 THEN 0 ELSE 1 END) AS failed_requests,
+      COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+      COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens
+    FROM request_logs WHERE ${where}
+    GROUP BY model ORDER BY requests DESC
+  `).all(...values) as UsageStats['by_model'];
+  return {
+    total_requests: summary.total_requests ?? 0,
+    successful_requests: summary.successful_requests ?? 0,
+    failed_requests: summary.failed_requests ?? 0,
+    prompt_tokens: summary.prompt_tokens ?? 0,
+    completion_tokens: summary.completion_tokens ?? 0,
+    total_tokens: summary.total_tokens ?? 0,
+    by_model: rows,
+  };
+}
+
+export function getLoggedModels(): string[] {
+  const db = getDb();
+  return (db.prepare("SELECT DISTINCT model FROM request_logs WHERE model IS NOT NULL AND model != '' ORDER BY model").all() as { model: string }[]).map(row => row.model);
+}
+
 function normalizeEndpoint(row: Record<string, unknown>): Endpoint {
   return {
     id: row.id as string,
