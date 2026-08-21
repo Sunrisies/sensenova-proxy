@@ -33,6 +33,8 @@ interface Endpoint {
   enabled: boolean;
   healthy: boolean;
   error_count: number;
+  quota_authorization: "not_configured" | "valid";
+  quota_expires_at?: number;
 }
 
 interface Model {
@@ -65,12 +67,18 @@ export default function EndpointsPage() {
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [authorizationEndpoint, setAuthorizationEndpoint] = useState<Endpoint | null>(null);
   const [form, setForm] = useState({
     name: "",
     url: "",
     api_key: "",
     priority: 0,
     weight: 1,
+  });
+  const [authorizationForm, setAuthorizationForm] = useState({
+    sensenova_account_id: "",
+    console_access_token: "",
+    console_refresh_token: "",
   });
 
   // Per-endpoint panels state
@@ -223,6 +231,42 @@ export default function EndpointsPage() {
     setDialogOpen(true);
   }
 
+  function openAuthorization(ep: Endpoint) {
+    setAuthorizationEndpoint(ep);
+    setAuthorizationForm({ sensenova_account_id: "", console_access_token: "", console_refresh_token: "" });
+  }
+
+  async function saveAuthorization() {
+    if (!authorizationEndpoint) return;
+    try {
+      const res = await fetch(`/api/endpoints/${authorizationEndpoint.id}/authorization`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(authorizationForm),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "更新授权失败");
+      toast.success("配额授权已更新");
+      setAuthorizationEndpoint(null);
+      fetchEndpoints();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "更新授权失败");
+    }
+  }
+
+  async function removeAuthorization() {
+    if (!authorizationEndpoint || !confirm(`确定移除“${authorizationEndpoint.name}”的配额授权吗？`)) return;
+    try {
+      const res = await fetch(`/api/endpoints/${authorizationEndpoint.id}/authorization`, { method: "DELETE" });
+      if (!res.ok) throw new Error("移除授权失败");
+      toast.success("配额授权已移除");
+      setAuthorizationEndpoint(null);
+      fetchEndpoints();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "移除授权失败");
+    }
+  }
+
   if (loading) {
     return <div className="text-muted-foreground">加载中...</div>;
   }
@@ -289,6 +333,32 @@ export default function EndpointsPage() {
             </div>
           </DialogContent>
         </Dialog>
+        <Dialog open={Boolean(authorizationEndpoint)} onOpenChange={(open) => !open && setAuthorizationEndpoint(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>{authorizationEndpoint?.name} · 配额授权</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 mt-4">
+              <p className="text-sm text-muted-foreground">保存后会完整替换该端点现有的 SenseNova 配额授权。Token 仅在服务端加密保存。</p>
+              <div className="space-y-2">
+                <Label>账号 ID</Label>
+                <Input value={authorizationForm.sensenova_account_id} onChange={(e) => setAuthorizationForm({ ...authorizationForm, sensenova_account_id: e.target.value })} placeholder="控制台 URL 中的 account_id" />
+              </div>
+              <div className="space-y-2">
+                <Label>Console Access Token</Label>
+                <Input type="password" value={authorizationForm.console_access_token} onChange={(e) => setAuthorizationForm({ ...authorizationForm, console_access_token: e.target.value })} placeholder="OAuth access_token" />
+              </div>
+              <div className="space-y-2">
+                <Label>Console Refresh Token</Label>
+                <Input type="password" value={authorizationForm.console_refresh_token} onChange={(e) => setAuthorizationForm({ ...authorizationForm, console_refresh_token: e.target.value })} placeholder="OAuth refresh_token" />
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={saveAuthorization} className="flex-1">更新授权</Button>
+                {authorizationEndpoint?.quota_authorization === "valid" && <Button variant="destructive" onClick={removeAuthorization}>移除授权</Button>}
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {endpoints.length === 0 ? (
@@ -314,6 +384,7 @@ export default function EndpointsPage() {
                         <div className="font-medium">{ep.name}</div>
                         <div className="text-sm text-muted-foreground">{ep.url}</div>
                         <div className="text-xs text-muted-foreground">Key: {ep.api_key}</div>
+                        <div className="text-xs text-muted-foreground">配额授权: {ep.quota_authorization === "valid" ? "已配置" : "未配置"}</div>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -327,9 +398,12 @@ export default function EndpointsPage() {
                       >
                         {panel.expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => openEdit(ep)}>
-                        编辑
-                      </Button>
+                       <Button variant="outline" size="sm" onClick={() => openEdit(ep)}>
+                         编辑
+                       </Button>
+                       <Button variant="outline" size="sm" onClick={() => openAuthorization(ep)}>
+                         配额授权
+                       </Button>
                       <Button variant="destructive" size="sm" onClick={() => handleDelete(ep.id)}>
                         删除
                       </Button>

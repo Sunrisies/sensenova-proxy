@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAllEndpoints, createEndpoint, type CreateEndpointInput } from '@/lib/db';
+import { encryptQuotaInput, getQuotaAuthorization } from '@/lib/quota';
 
 export async function GET() {
   const endpoints = getAllEndpoints();
   // Mask API keys in response
   const masked = endpoints.map(e => ({
-    ...e,
+    id: e.id,
+    name: e.name,
+    url: e.url,
     api_key: e.api_key.slice(0, 6) + '***' + e.api_key.slice(-4),
+    priority: e.priority,
+    weight: e.weight,
+    enabled: e.enabled,
+    healthy: e.healthy,
+    error_count: e.error_count,
+    ...getQuotaAuthorization(e),
   }));
   return NextResponse.json(masked);
 }
@@ -19,9 +28,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'name, url, api_key are required' }, { status: 400 });
     }
 
-    const endpoint = createEndpoint(body);
-    return NextResponse.json(endpoint, { status: 201 });
+    const quotaInput = encryptQuotaInput(body);
+    const endpoint = createEndpoint({ ...body, ...quotaInput });
+    return NextResponse.json({ id: endpoint.id, ...getQuotaAuthorization(endpoint) }, { status: 201 });
   } catch (error) {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, { status: 400 });
   }
 }

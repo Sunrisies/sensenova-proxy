@@ -19,6 +19,10 @@ export interface Endpoint {
   error_count: number;
   created_at: number;
   updated_at: number;
+  sensenova_account_id?: string;
+  console_access_token?: string;
+  console_access_expires_at?: number;
+  console_refresh_token?: string;
 }
 
 export interface CreateEndpointInput {
@@ -28,6 +32,10 @@ export interface CreateEndpointInput {
   priority?: number;
   weight?: number;
   enabled?: boolean;
+  sensenova_account_id?: string;
+  console_access_token?: string;
+  console_access_expires_at?: number;
+  console_refresh_token?: string;
 }
 
 export interface UpdateEndpointInput {
@@ -37,6 +45,10 @@ export interface UpdateEndpointInput {
   priority?: number;
   weight?: number;
   enabled?: boolean;
+  sensenova_account_id?: string;
+  console_access_token?: string;
+  console_access_expires_at?: number;
+  console_refresh_token?: string;
 }
 
 export interface RequestLog {
@@ -86,6 +98,10 @@ function getDb(): Database.Database {
         healthy INTEGER DEFAULT 1,
         last_check INTEGER DEFAULT 0,
         error_count INTEGER DEFAULT 0,
+        sensenova_account_id TEXT,
+        console_access_token TEXT,
+        console_access_expires_at INTEGER,
+        console_refresh_token TEXT,
         created_at INTEGER DEFAULT (unixepoch()),
         updated_at INTEGER DEFAULT (unixepoch())
       );
@@ -119,9 +135,9 @@ function getDb(): Database.Database {
     `);
 
     // Add fields when upgrading databases created by earlier versions.
-    const columns = db.prepare('PRAGMA table_info(request_logs)').all() as { name: string }[];
-    const existing = new Set(columns.map(column => column.name));
-    const migrations: Record<string, string> = {
+    const logColumns = db.prepare('PRAGMA table_info(request_logs)').all() as { name: string }[];
+    const existingLogs = new Set(logColumns.map(column => column.name));
+    const logMigrations: Record<string, string> = {
       model: 'ALTER TABLE request_logs ADD COLUMN model TEXT',
       stream: 'ALTER TABLE request_logs ADD COLUMN stream INTEGER DEFAULT 0',
       client_ip: 'ALTER TABLE request_logs ADD COLUMN client_ip TEXT',
@@ -132,8 +148,20 @@ function getDb(): Database.Database {
       cost: 'ALTER TABLE request_logs ADD COLUMN cost REAL',
       switch_chain: 'ALTER TABLE request_logs ADD COLUMN switch_chain TEXT',
     };
-    for (const [column, statement] of Object.entries(migrations)) {
-      if (!existing.has(column)) db.exec(statement);
+    for (const [column, statement] of Object.entries(logMigrations)) {
+      if (!existingLogs.has(column)) db.exec(statement);
+    }
+
+    const endpointColumns = db.prepare('PRAGMA table_info(endpoints)').all() as { name: string }[];
+    const existingEndpoints = new Set(endpointColumns.map(column => column.name));
+    const endpointMigrations: Record<string, string> = {
+      sensenova_account_id: 'ALTER TABLE endpoints ADD COLUMN sensenova_account_id TEXT',
+      console_access_token: 'ALTER TABLE endpoints ADD COLUMN console_access_token TEXT',
+      console_access_expires_at: 'ALTER TABLE endpoints ADD COLUMN console_access_expires_at INTEGER',
+      console_refresh_token: 'ALTER TABLE endpoints ADD COLUMN console_refresh_token TEXT',
+    };
+    for (const [column, statement] of Object.entries(endpointMigrations)) {
+      if (!existingEndpoints.has(column)) db.exec(statement);
     }
   }
   return db;
@@ -170,8 +198,8 @@ export function createEndpoint(input: CreateEndpointInput): Endpoint {
   const now = Math.floor(Date.now() / 1000);
 
   db.prepare(`
-    INSERT INTO endpoints (id, name, url, api_key, priority, weight, enabled, healthy, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    INSERT INTO endpoints (id, name, url, api_key, priority, weight, enabled, healthy, sensenova_account_id, console_access_token, console_access_expires_at, console_refresh_token, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.name,
@@ -180,6 +208,10 @@ export function createEndpoint(input: CreateEndpointInput): Endpoint {
     input.priority ?? 0,
     input.weight ?? 1,
     input.enabled ?? 1,
+    input.sensenova_account_id ?? null,
+    input.console_access_token ?? null,
+    input.console_access_expires_at ?? null,
+    input.console_refresh_token ?? null,
     now,
     now
   );
@@ -202,6 +234,10 @@ export function updateEndpoint(id: string, input: UpdateEndpointInput): Endpoint
   if (input.priority !== undefined) { updates.push('priority = ?'); values.push(input.priority); }
   if (input.weight !== undefined) { updates.push('weight = ?'); values.push(input.weight); }
   if (input.enabled !== undefined) { updates.push('enabled = ?'); values.push(input.enabled ? 1 : 0); }
+  if (input.sensenova_account_id !== undefined) { updates.push('sensenova_account_id = ?'); values.push(input.sensenova_account_id || null); }
+  if (input.console_access_token !== undefined) { updates.push('console_access_token = ?'); values.push(input.console_access_token || null); }
+  if (input.console_access_expires_at !== undefined) { updates.push('console_access_expires_at = ?'); values.push(input.console_access_expires_at || null); }
+  if (input.console_refresh_token !== undefined) { updates.push('console_refresh_token = ?'); values.push(input.console_refresh_token || null); }
 
   if (updates.length === 0) return existing;
 
@@ -211,6 +247,18 @@ export function updateEndpoint(id: string, input: UpdateEndpointInput): Endpoint
 
   db.prepare(`UPDATE endpoints SET ${updates.join(', ')} WHERE id = ?`).run(...values);
   return getEndpoint(id)!;
+}
+
+export function updateEndpointQuotaTokens(id: string, accessToken: string, expiresAt: number, refreshToken?: string): void {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+  if (refreshToken) {
+    db.prepare('UPDATE endpoints SET console_access_token = ?, console_access_expires_at = ?, console_refresh_token = ?, updated_at = ? WHERE id = ?')
+      .run(accessToken, expiresAt, refreshToken, now, id);
+    return;
+  }
+  db.prepare('UPDATE endpoints SET console_access_token = ?, console_access_expires_at = ?, updated_at = ? WHERE id = ?')
+    .run(accessToken, expiresAt, now, id);
 }
 
 export function deleteEndpoint(id: string): boolean {
@@ -281,5 +329,9 @@ function normalizeEndpoint(row: Record<string, unknown>): Endpoint {
     error_count: row.error_count as number,
     created_at: row.created_at as number,
     updated_at: row.updated_at as number,
+    sensenova_account_id: row.sensenova_account_id as string | undefined,
+    console_access_token: row.console_access_token as string | undefined,
+    console_access_expires_at: row.console_access_expires_at as number | undefined,
+    console_refresh_token: row.console_refresh_token as string | undefined,
   };
 }
