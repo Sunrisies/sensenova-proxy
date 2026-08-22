@@ -17,6 +17,7 @@ export interface Endpoint {
   healthy: boolean;
   last_check: number;
   error_count: number;
+  cooldown_until?: number;
   created_at: number;
   updated_at: number;
   sensenova_account_id?: string;
@@ -98,6 +99,7 @@ function getDb(): Database.Database {
         healthy INTEGER DEFAULT 1,
         last_check INTEGER DEFAULT 0,
         error_count INTEGER DEFAULT 0,
+        cooldown_until INTEGER DEFAULT 0,
         sensenova_account_id TEXT,
         console_access_token TEXT,
         console_access_expires_at INTEGER,
@@ -159,6 +161,7 @@ function getDb(): Database.Database {
       console_access_token: 'ALTER TABLE endpoints ADD COLUMN console_access_token TEXT',
       console_access_expires_at: 'ALTER TABLE endpoints ADD COLUMN console_access_expires_at INTEGER',
       console_refresh_token: 'ALTER TABLE endpoints ADD COLUMN console_refresh_token TEXT',
+      cooldown_until: 'ALTER TABLE endpoints ADD COLUMN cooldown_until INTEGER DEFAULT 0',
     };
     for (const [column, statement] of Object.entries(endpointMigrations)) {
       if (!existingEndpoints.has(column)) db.exec(statement);
@@ -180,9 +183,15 @@ export function getEnabledEndpoints(): Endpoint[] {
   return rows.map(normalizeEndpoint);
 }
 
+export function getAvailableEndpoints(): Endpoint[] {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM endpoints WHERE enabled = 1 AND (cooldown_until IS NULL OR cooldown_until <= unixepoch()) ORDER BY priority ASC, weight DESC').all() as Record<string, unknown>[];
+  return rows.map(normalizeEndpoint);
+}
+
 export function getHealthyEndpoints(): Endpoint[] {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM endpoints WHERE enabled = 1 AND healthy = 1 ORDER BY priority ASC, weight DESC').all() as Record<string, unknown>[];
+  const rows = db.prepare('SELECT * FROM endpoints WHERE enabled = 1 AND healthy = 1 AND (cooldown_until IS NULL OR cooldown_until <= unixepoch()) ORDER BY priority ASC, weight DESC').all() as Record<string, unknown>[];
   return rows.map(normalizeEndpoint);
 }
 
@@ -271,8 +280,15 @@ export function deleteEndpoint(id: string): boolean {
 export function markHealthy(id: string): void {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
-  db.prepare('UPDATE endpoints SET healthy = 1, error_count = 0, last_check = ?, updated_at = ? WHERE id = ?')
+  db.prepare('UPDATE endpoints SET healthy = 1, error_count = 0, cooldown_until = 0, last_check = ?, updated_at = ? WHERE id = ?')
     .run(now, now, id);
+}
+
+export function markRateLimited(id: string, cooldownSeconds = 60): void {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare('UPDATE endpoints SET cooldown_until = ?, last_check = ?, updated_at = ? WHERE id = ?')
+    .run(now + cooldownSeconds, now, now, id);
 }
 
 export function markUnhealthy(id: string): void {
@@ -395,6 +411,7 @@ function normalizeEndpoint(row: Record<string, unknown>): Endpoint {
     healthy: Boolean(row.healthy),
     last_check: row.last_check as number,
     error_count: row.error_count as number,
+    cooldown_until: row.cooldown_until as number | undefined,
     created_at: row.created_at as number,
     updated_at: row.updated_at as number,
     sensenova_account_id: row.sensenova_account_id as string | undefined,

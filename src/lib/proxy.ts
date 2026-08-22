@@ -1,4 +1,4 @@
-import { getHealthyEndpoints, getEnabledEndpoints, markUnhealthy, markHealthy, addLog, type Endpoint } from './db';
+import { getHealthyEndpoints, getAvailableEndpoints, markUnhealthy, markHealthy, markRateLimited, addLog } from './db';
 import fs from 'fs';
 import path from 'path';
 
@@ -64,11 +64,11 @@ export async function proxyRequest(
   });
 
   const healthyEndpoints = getHealthyEndpoints();
-  const enabledEndpoints = getEnabledEndpoints();
+  const availableEndpoints = getAvailableEndpoints();
   // Health checks are advisory. If every key is marked unhealthy, still try
   // each enabled key so a transient /models failure cannot cause a 503.
-  const endpoints = healthyEndpoints.length > 0 ? healthyEndpoints : enabledEndpoints;
-  debugLog(`[PROXY] method=${method} path=${path} healthyEndpoints=${healthyEndpoints.length} enabledEndpoints=${enabledEndpoints.length}`);
+  const endpoints = healthyEndpoints.length > 0 ? healthyEndpoints : availableEndpoints;
+  debugLog(`[PROXY] method=${method} path=${path} healthyEndpoints=${healthyEndpoints.length} availableEndpoints=${availableEndpoints.length}`);
 
   if (endpoints.length === 0) {
     debugLog('[PROXY] No enabled endpoints configured');
@@ -124,7 +124,7 @@ export async function proxyRequest(
         if (response.status === 500) {
           markUnhealthy(endpoint.id);
         } else {
-          markHealthy(endpoint.id);
+          markRateLimited(endpoint.id);
         }
         lastError = `HTTP ${response.status}: ${errorText}`;
         debugLog(`[PROXY] retryable status=${response.status}; switching endpoint`);
@@ -170,6 +170,23 @@ export async function proxyRequest(
         let completionTokens: number | undefined;
         let totalTokens: number | undefined;
 
+        function parseSseLine(line: string) {
+          if (!line.startsWith('data:')) return;
+          const value = line.slice(5).trim();
+          if (!value || value === '[DONE]') return;
+          try {
+            const event = JSON.parse(value) as Record<string, unknown>;
+            const usage = event.usage as Record<string, unknown> | undefined;
+            if (usage) {
+              if (typeof usage.prompt_tokens === 'number') promptTokens = usage.prompt_tokens;
+              if (typeof usage.completion_tokens === 'number') completionTokens = usage.completion_tokens;
+              if (typeof usage.total_tokens === 'number') totalTokens = usage.total_tokens;
+            }
+          } catch {
+            // A partial SSE frame is handled on the next chunk.
+          }
+        }
+
         const stream = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
           transform(chunk, controller) {
             const text = decoder.decode(chunk, { stream: true });
@@ -178,25 +195,15 @@ export async function proxyRequest(
             const lines = buffer.split('\n');
             buffer = lines.pop() ?? '';
             for (const line of lines) {
-              if (!line.startsWith('data:')) continue;
-              const value = line.slice(5).trim();
-              if (!value || value === '[DONE]') continue;
-              try {
-                const event = JSON.parse(value) as Record<string, unknown>;
-                const usage = event.usage as Record<string, unknown> | undefined;
-                if (usage) {
-                  if (typeof usage.prompt_tokens === 'number') promptTokens = usage.prompt_tokens;
-                  if (typeof usage.completion_tokens === 'number') completionTokens = usage.completion_tokens;
-                  if (typeof usage.total_tokens === 'number') totalTokens = usage.total_tokens;
-                }
-              } catch {
-                // A partial SSE frame is handled on the next chunk.
-              }
+              parseSseLine(line);
             }
             controller.enqueue(encoder.encode(text));
           },
           flush(controller) {
-            controller.enqueue(encoder.encode(decoder.decode()));
+            const finalText = decoder.decode();
+            buffer += finalText;
+            for (const line of buffer.split('\n')) parseSseLine(line);
+            controller.enqueue(encoder.encode(finalText));
             const completed = {
               ...baseLog,
               duration: Date.now() - startTime,

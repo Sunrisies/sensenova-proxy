@@ -3,6 +3,7 @@ import { updateEndpointQuotaTokens, type Endpoint } from './db';
 
 const REFRESH_WINDOW_SECONDS = 600;
 const TIMEOUT_MS = 10000;
+const refreshLocks = new Map<string, Promise<string>>();
 
 type RefreshResponse = { access_token?: unknown; refresh_token?: unknown };
 
@@ -11,6 +12,18 @@ function authorizationConfigured(endpoint: Endpoint): boolean {
 }
 
 async function refreshAccessToken(endpoint: Endpoint): Promise<string> {
+  const existing = refreshLocks.get(endpoint.id);
+  if (existing) return existing;
+  const refresh = refreshAccessTokenUnlocked(endpoint);
+  refreshLocks.set(endpoint.id, refresh);
+  try {
+    return await refresh;
+  } finally {
+    refreshLocks.delete(endpoint.id);
+  }
+}
+
+async function refreshAccessTokenUnlocked(endpoint: Endpoint): Promise<string> {
   if (!endpoint.console_refresh_token) throw new Error('Quota refresh token is not configured');
   const refreshToken = decryptSecret(endpoint.console_refresh_token);
   const body = new URLSearchParams({ grant_type: 'refresh_token', client_id: 'nova', refresh_token: refreshToken });
