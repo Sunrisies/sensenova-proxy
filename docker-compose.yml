@@ -9,6 +9,11 @@ services:
       - proxy-data:/app/data
     environment:
       - NODE_ENV=production
+      - ADMIN_USERNAME=${ADMIN_USERNAME}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - ADMIN_SESSION_SECRET=${ADMIN_SESSION_SECRET}
+      - PROXY_API_KEYS=${PROXY_API_KEYS}
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
     restart: unless-stopped
 
 volumes:

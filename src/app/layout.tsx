@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -7,16 +8,19 @@ export const metadata: Metadata = {
   description: "SenseNova 自动故障转移代理",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const pathname = (await headers()).get("x-pathname") ?? "";
+  const isLoginPage = pathname === "/login";
+
   return (
     <html lang="zh-CN">
       <body className="antialiased">
         <div className="min-h-screen bg-background">
-          <nav className="border-b bg-card">
+          {!isLoginPage && <nav className="border-b bg-card">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
               <div className="flex h-14 items-center justify-between">
                 <div className="flex items-center gap-6">
@@ -43,8 +47,8 @@ export default function RootLayout({
                 </div>
               </div>
             </div>
-          </nav>
-          <main className="mx-auto w-full max-w-[1720px] px-3 py-5 sm:px-5 sm:py-6 lg:px-6">
+          </nav>}
+          <main className={isLoginPage ? "min-h-screen" : "mx-auto w-full max-w-[1720px] px-3 py-5 sm:px-5 sm:py-6 lg:px-6"}>
             {children}
           </main>
         </div>

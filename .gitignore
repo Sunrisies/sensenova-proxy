@@ -38,6 +38,10 @@ debug-*.log
 *.db-shm
 *.db-wal
 
+# local review notes
+*.local.md
+audit-report.md
+
 # env files (can opt-in for committing if needed)
 .env*
 
