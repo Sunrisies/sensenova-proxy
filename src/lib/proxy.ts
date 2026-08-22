@@ -1,7 +1,7 @@
 import { getHealthyEndpoints, getAvailableEndpoints, markUnhealthy, markHealthy, markRateLimited, addLog, addRequestAttempt, updateRequestAttempt } from './db';
 import { v4 as uuidv4 } from 'uuid';
 
-const REQUEST_TIMEOUT = 30000;
+const REQUEST_TIMEOUT = Number(process.env.PROXY_REQUEST_TIMEOUT_MS || 120000);
 function debugLog(msg: string) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }

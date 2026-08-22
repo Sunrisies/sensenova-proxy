@@ -3,7 +3,7 @@ node_modules
 .git
 data
 *.db
-.env*
+.env
 *.log
 debug.log
 *.local.md
@@ -12,3 +12,4 @@ vitest.config.mjs
 audit-report.md
 AGENTS.md
 *.tsbuildinfo
+build

@@ -1,0 +1,5 @@
+proxy.sunrise1024.top {
+  reverse_proxy localhost:3001 {
+    flush_interval -1
+  }
+}
