@@ -2,8 +2,13 @@ import { describe, it, beforeAll, afterAll, beforeEach, afterEach, expect, vi } 
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import crypto from 'node:crypto';
 
 process.env.TOKEN_ENCRYPTION_KEY = 'test-encryption-key-32bytes!!';
+process.env.ADMIN_SESSION_SECRET = 'test-admin-session-secret';
+const testPasswordSalt = Buffer.from('test-password-salt');
+const testPasswordHash = crypto.scryptSync('secret', testPasswordSalt, 64, { N: 16384, r: 8, p: 1 });
+process.env.ADMIN_PASSWORD_HASH = `scrypt:${testPasswordSalt.toString('base64url')}:${testPasswordHash.toString('base64url')}`;
 const origCwd = process.cwd();
 let testDbPath = '';
 
@@ -270,5 +275,251 @@ describe('SSE last-frame usage capture', () => {
       'data: {"usage":{"prompt_tokens":99,"completion_tokens":199,"total_tokens":298}}',
     ], { p: 99, c: 199, t: 298 });
     console.log('  [PASS] flush-only: p=99 c=199 t=298');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Suite 4: SSE client disconnect -> log still written
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('SSE client disconnect logging', () => {
+  let ep1, fetchMock;
+
+  beforeEach(() => {
+    for (const ep of DB.getAllEndpoints()) DB.deleteEndpoint(ep.id);
+    try { DB.getLogs(1, 1); } catch {}
+    ep1 = DB.createEndpoint({ name: 'e1', url: 'https://api.sensenova.cn/v1/llm', api_key: 'k1', priority: 0 });
+    DB.markHealthy(ep1.id);
+    const id1 = ep1.id;
+    vi.spyOn(DB, 'getAvailableEndpoints').mockImplementation(() => [DB.getEndpoint(id1)]);
+    vi.spyOn(DB, 'getHealthyEndpoints').mockImplementation(() => [DB.getEndpoint(id1)]);
+  });
+
+  afterEach(() => { fetchMock?.mockRestore(); vi.restoreAllMocks(); });
+
+  function makeSse(chunks) {
+    return { ok: true, status: 200, statusText: 'OK',
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: new ReadableStream({
+        start(c) { for (const ch of chunks) c.enqueue(new TextEncoder().encode(ch)); c.close(); },
+      })};
+  }
+
+  it('log written when client disconnects (abort response reader)', async () => {
+    fetchMock = vi.spyOn(global, 'fetch').mockImplementation(async () => makeSse([
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+    ]));
+
+    const req = new Request('http://localhost/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'g4', stream: true }),
+    });
+    const resp = await PROXY.proxyRequest(req, 'v1/chat/completions');
+    expect(resp.status).toBe(200);
+
+    // Simulate client disconnect: abort the response reader without reading everything
+    const reader = resp.body.getReader();
+    await reader.read();  // read first chunk
+    await reader.cancel('client disconnected');
+
+    await new Promise(r => setTimeout(r, 300));
+
+    const logs = DB.getLogs(1, 100).logs;
+    expect(logs.length).toBeGreaterThan(0);
+    const log = logs.find(l => l.model === 'g4') || logs[0];
+    expect(log.error).toBeDefined();
+    expect(log.error).toContain('disconnect');
+    console.log('  [PASS] log written on client disconnect');
+  });
+
+  it('log written when upstream stream throws error', async () => {
+    let readerController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    fetchMock = vi.spyOn(global, 'fetch').mockImplementation(async () => ({
+      ok: true, status: 200, statusText: 'OK',
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: new ReadableStream({
+        start(controller) {
+          readerController = controller;
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'));
+        },
+      }),
+    }));
+
+    const req = new Request('http://localhost/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'g4', stream: true }),
+    });
+    const resp = await PROXY.proxyRequest(req, 'v1/chat/completions');
+    expect(resp.status).toBe(200);
+
+    // Consume one chunk then force an error on the upstream stream
+    const reader = resp.body.getReader();
+    await reader.read();
+
+    // Close the upstream abruptly (simulate connection drop)
+    readerController?.close();
+
+    await new Promise(r => setTimeout(r, 500));
+
+    const logs = DB.getLogs(1, 100).logs;
+    expect(logs.length).toBeGreaterThan(0);
+    console.log('  [PASS] log written on upstream stream error');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Suite 5: Login rate limiting
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('Login rate limiting', () => {
+  let loginHandler, LOGIN_MODULE;
+
+  beforeAll(async () => {
+    process.env.ADMIN_USERNAME = 'admin';
+    LOGIN_MODULE = await import('../src/app/api/auth/login/route.ts');
+    loginHandler = LOGIN_MODULE.POST;
+  });
+
+  afterAll(() => {
+    delete process.env.ADMIN_USERNAME;
+    delete process.env.ADMIN_PASSWORD_HASH;
+    delete process.env.ADMIN_SESSION_SECRET;
+  });
+
+  function loginReq(username, password, ip = '1.2.3.4') {
+    return new Request('http://localhost/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip },
+      body: JSON.stringify({ username, password }),
+    });
+  }
+
+  it('5 failed attempts lock the account for 15 minutes', async () => {
+    const ip = '10.0.0.1';
+    for (let i = 0; i < 5; i++) {
+      const resp = await loginHandler(loginReq('admin', 'wrong', ip));
+      expect(resp.status).toBe(401);
+    }
+    const locked = await loginHandler(loginReq('admin', 'wrong', ip));
+    expect(locked.status).toBe(429);
+    const data = await locked.json();
+    expect(data.error).toContain('过多');
+    console.log('  [PASS] account locked after 5 failures');
+  });
+
+  it('correct credentials clear failure counter', async () => {
+    const ip = '10.0.0.2';
+    // 3 failed attempts
+    for (let i = 0; i < 3; i++) {
+      const resp = await loginHandler(loginReq('admin', 'wrong', ip));
+      expect(resp.status).toBe(401);
+    }
+    // correct credentials should succeed and clear counter
+    const resp = await loginHandler(loginReq('admin', 'secret', ip));
+    expect(resp.status).toBe(200);
+    const cookie = resp.headers.get('set-cookie') ?? '';
+    expect(cookie).toContain('sensenova_admin_session');
+    // subsequent failure starts counting from 0
+    const after = await loginHandler(loginReq('admin', 'wrong', ip));
+    expect(after.status).toBe(401);
+    console.log('  [PASS] correct login clears counter');
+  });
+
+  it('different user not affected by lock', async () => {
+    const ip = '10.0.0.3';
+    // Lock 'admin'
+    for (let i = 0; i < 5; i++) {
+      await loginHandler(loginReq('admin', 'wrong', ip));
+    }
+    const locked = await loginHandler(loginReq('admin', 'wrong', ip));
+    expect(locked.status).toBe(429);
+    // 'other' user should not be affected
+    const resp = await loginHandler(loginReq('other', 'wrong', ip));
+    expect(resp.status).toBe(401);
+    console.log('  [PASS] different user not affected by lock');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Suite 6: Endpoint test logs with is_test flag
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('Endpoint test logging with is_test', () => {
+  let testHandler, ep1, fetchMock;
+
+  beforeAll(async () => {
+    const MOD = await import('../src/app/api/endpoints/[id]/test/route.ts');
+    testHandler = MOD.POST;
+  });
+
+  beforeEach(() => {
+    for (const ep of DB.getAllEndpoints()) DB.deleteEndpoint(ep.id);
+    try { DB.getLogs(1, 1); } catch {}
+    ep1 = DB.createEndpoint({ name: 'e1', url: 'https://api.sensenova.cn/v1/llm', api_key: 'k1', priority: 0 });
+    DB.markHealthy(ep1.id);
+  });
+
+  afterEach(() => { fetchMock?.mockRestore(); });
+
+  it('successful test writes log with is_test = 1', async () => {
+    fetchMock = vi.spyOn(global, 'fetch').mockImplementation(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ choices: [{ message: { content: 'OK' } }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }),
+    }));
+
+    const req = new Request(`http://localhost/api/endpoints/${ep1.id}/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'g4' }),
+    });
+
+    const params = Promise.resolve({ id: ep1.id });
+    const resp = await testHandler(req, { params });
+    expect(resp.status).toBe(200);
+
+    const logs = DB.getLogs(1, 100).logs;
+    expect(logs.length).toBeGreaterThan(0);
+    const log = logs.find(l => l.model === 'g4');
+    expect(log).toBeDefined();
+    expect(log.is_test).toBe(1);
+    expect(log.prompt_tokens).toBe(5);
+    console.log('  [PASS] test log written with is_test=1');
+  });
+
+  it('failed test writes log with is_test = 1', async () => {
+    fetchMock = vi.spyOn(global, 'fetch').mockImplementation(async () => ({
+      ok: false, status: 500,
+      text: async () => 'Internal Server Error',
+    }));
+
+    const req = new Request(`http://localhost/api/endpoints/${ep1.id}/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'g4' }),
+    });
+
+    const params = Promise.resolve({ id: ep1.id });
+    const resp = await testHandler(req, { params });
+    expect(resp.status).toBe(200);
+
+    const logs = DB.getLogs(1, 100).logs;
+    const log = logs.find(l => l.model === 'g4');
+    expect(log).toBeDefined();
+    expect(log.is_test).toBe(1);
+    expect(log.success).toBe(false);
+    console.log('  [PASS] failed test log written with is_test=1');
+  });
+
+  it('usage stats exclude is_test logs', async () => {
+    // Write a test log
+    await DB.addLog({ endpoint_id: ep1.id, endpoint_name: 'e1', method: 'POST', path: 'chat/completions', status: 200, duration: 100, success: true, switched: false, model: 'g4', stream: false, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, is_test: true });
+
+    // Write a real log
+    await DB.addLog({ endpoint_id: ep1.id, endpoint_name: 'e1', method: 'POST', path: 'chat/completions', status: 200, duration: 200, success: true, switched: false, model: 'g4', stream: false, prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+
+    const stats = DB.getUsageStats();
+    expect(stats.total_requests).toBe(1); // only the real log
+    expect(stats.by_model[0].prompt_tokens).toBe(10);
+    console.log('  [PASS] stats exclude is_test logs');
   });
 });

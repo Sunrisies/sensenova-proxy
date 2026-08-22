@@ -7,7 +7,7 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  if (!getEndpoint(id)) return NextResponse.json({ error: 'Endpoint not found' }, { status: 404 });
+  if (!(await getEndpoint(id))) return NextResponse.json({ error: 'Endpoint not found' }, { status: 404 });
 
   try {
     const body = await request.json() as {
@@ -16,7 +16,7 @@ export async function PUT(
       console_refresh_token?: string;
     };
     const credentials = encryptQuotaInput(body);
-    const endpoint = updateEndpoint(id, credentials);
+    const endpoint = await updateEndpoint(id, credentials);
     return NextResponse.json({ id, ...getQuotaAuthorization(endpoint!) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid authorization' }, { status: 400 });
@@ -28,7 +28,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const endpoint = updateEndpoint(id, {
+  const endpoint = await updateEndpoint(id, {
     sensenova_account_id: '',
     console_access_token: '',
     console_access_expires_at: 0,

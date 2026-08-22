@@ -1,8 +1,8 @@
 import { getEnabledEndpoints, markHealthy, markUnhealthy } from './db';
 
-const HEALTH_CHECK_INTERVAL = 30000; // 30 seconds
-const COOLDOWN_PERIOD = 60000; // 60 seconds
-const CHECK_TIMEOUT = 10000; // 10 seconds
+const HEALTH_CHECK_INTERVAL = 30000;
+const COOLDOWN_PERIOD = 60000;
+const CHECK_TIMEOUT = 10000;
 
 let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -20,8 +20,6 @@ async function checkEndpointHealth(endpoint: { id: string; url: string; api_key:
     });
 
     clearTimeout(timeoutId);
-    // SenseNova uses application-level errors for normal, reachable states.
-    // Only an HTTP 500 response means the endpoint itself is unhealthy.
     return response.status !== 500;
   } catch {
     return false;
@@ -29,11 +27,10 @@ async function checkEndpointHealth(endpoint: { id: string; url: string; api_key:
 }
 
 async function runHealthCheck() {
-  const endpoints = getEnabledEndpoints();
+  const endpoints = await getEnabledEndpoints();
   const now = Date.now();
 
   for (const endpoint of endpoints) {
-    // Skip if in cooldown period (for unhealthy endpoints)
     if (!endpoint.healthy && (now - endpoint.last_check * 1000) < COOLDOWN_PERIOD) {
       continue;
     }
@@ -41,9 +38,9 @@ async function runHealthCheck() {
     const isHealthy = await checkEndpointHealth(endpoint);
 
     if (isHealthy) {
-      markHealthy(endpoint.id);
+      await markHealthy(endpoint.id);
     } else {
-      markUnhealthy(endpoint.id);
+      await markUnhealthy(endpoint.id);
     }
   }
 }
@@ -52,9 +49,7 @@ export function startHealthCheck() {
   if (healthCheckTimer) return;
 
   console.log('[HealthCheck] Starting health check service');
-  // Initial check after 5 seconds
   setTimeout(runHealthCheck, 5000);
-  // Then every 30 seconds
   healthCheckTimer = setInterval(runHealthCheck, HEALTH_CHECK_INTERVAL);
 }
 
@@ -66,7 +61,6 @@ export function stopHealthCheck() {
   }
 }
 
-// Auto-start on import (server-side only)
 if (typeof window === 'undefined') {
   startHealthCheck();
 }

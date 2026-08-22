@@ -121,6 +121,9 @@ Vitest v4，覆盖以下三项修复的验证：
 | OAuth refresh concurrent lock | 2 | 并发刷新锁、缓存窗口内不重复刷新 |
 | 429 rate limiting cooldown | 5 | 冷却设置、端点排除、冷却恢复、代理故障转移 |
 | SSE last-frame usage capture | 3 | flush 阶段捕获最后一帧 Token usage |
+| SSE client disconnect logging | 2 | 客户端断开/流异常时仍写入最终日志 |
+| Login rate limiting | 3 | 5 次失败锁定 15 分钟、成功登录清零、不同用户独立 |
+| Endpoint test logging with is_test | 3 | 测试请求标记 `is_test=1`、统计自动排除 |
 
 ## 项目结构
 

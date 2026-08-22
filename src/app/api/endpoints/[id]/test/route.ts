@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getEndpoint, markHealthy, markUnhealthy } from '@/lib/db';
+import { addLog, getEndpoint, markHealthy, markUnhealthy } from '@/lib/db';
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const endpoint = getEndpoint(id);
+  const endpoint = await getEndpoint(id);
 
   if (!endpoint) {
     return NextResponse.json({ error: 'Endpoint not found' }, { status: 404 });
@@ -39,10 +39,11 @@ export async function POST(
     if (!response.ok) {
       const text = await response.text();
       if (response.status === 500) {
-        markUnhealthy(endpoint.id);
+        await markUnhealthy(endpoint.id);
       } else {
-        markHealthy(endpoint.id);
+        await markHealthy(endpoint.id);
       }
+      await addLog({ endpoint_id: endpoint.id, endpoint_name: endpoint.name, method: 'POST', path: 'chat/completions', status: response.status, duration, success: false, switched: false, error: text, model, stream: false, is_test: true });
       return NextResponse.json({
         success: false,
         status: response.status,
@@ -53,7 +54,9 @@ export async function POST(
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content ?? '';
-    markHealthy(endpoint.id);
+    const usage = data.usage ?? {};
+    await addLog({ endpoint_id: endpoint.id, endpoint_name: endpoint.name, method: 'POST', path: 'chat/completions', status: response.status, duration, success: true, switched: false, model: data.model ?? model, stream: false, prompt_tokens: usage.prompt_tokens, completion_tokens: usage.completion_tokens, total_tokens: usage.total_tokens, is_test: true });
+    await markHealthy(endpoint.id);
 
     return NextResponse.json({
       success: true,
@@ -63,7 +66,7 @@ export async function POST(
       model: data.model,
     });
   } catch (error) {
-    markUnhealthy(endpoint.id);
+    await markUnhealthy(endpoint.id);
     const message = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json({
       success: false,

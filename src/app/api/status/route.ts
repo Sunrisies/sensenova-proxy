@@ -4,7 +4,7 @@ import { getAllEndpoints } from '@/lib/db';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const endpoints = getAllEndpoints();
+  const endpoints = await getAllEndpoints();
   const status = endpoints.map(e => ({
     id: e.id,
     name: e.name,

@@ -25,6 +25,7 @@ interface LogEntry {
   cost?: number;
   switch_chain?: string;
   created_at: number;
+  attempts?: { endpoint_name: string; status: number; success: boolean; error?: string }[];
 }
 
 interface LogsResponse {
@@ -131,6 +132,7 @@ export default function LogsPage() {
                     <span>费用: {log.cost != null ? `$${log.cost.toFixed(6)}` : "-"}</span>
                   </div>
                   {log.error && <div className="mt-2 truncate text-xs text-destructive" title={log.error}>{log.error}</div>}
+                  {log.attempts && log.attempts.length > 1 && <div className="mt-2 text-xs text-muted-foreground">尝试明细：{log.attempts.map((attempt, index) => <span key={`${attempt.endpoint_name}-${index}`} className={attempt.success ? "text-emerald-600" : "text-rose-600"}>{index > 0 ? " → " : ""}{attempt.endpoint_name} ({attempt.status || "网络错误"})</span>)}</div>}
                 </div>
               ))}
             </div>

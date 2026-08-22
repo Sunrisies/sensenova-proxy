@@ -5,6 +5,6 @@ import { getEndpointQuota } from '@/lib/quota';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const endpoints = getEnabledEndpoints();
+  const endpoints = await getEnabledEndpoints();
   return NextResponse.json({ endpoints: await Promise.all(endpoints.map(getEndpointQuota)) });
 }

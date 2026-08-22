@@ -3,7 +3,7 @@ import { getAllEndpoints, createEndpoint, type CreateEndpointInput } from '@/lib
 import { encryptQuotaInput, getQuotaAuthorization } from '@/lib/quota';
 
 export async function GET() {
-  const endpoints = getAllEndpoints();
+  const endpoints = await getAllEndpoints();
   // Mask API keys in response
   const masked = endpoints.map(e => ({
     id: e.id,
@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
     }
 
     const quotaInput = encryptQuotaInput(body);
-    const endpoint = createEndpoint({ ...body, ...quotaInput });
+    const endpoint = await createEndpoint({ ...body, ...quotaInput });
     return NextResponse.json({ id: endpoint.id, ...getQuotaAuthorization(endpoint) }, { status: 201 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, { status: 400 });

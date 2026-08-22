@@ -36,7 +36,7 @@ async function refreshAccessTokenUnlocked(endpoint: Endpoint): Promise<string> {
   const data = await response.json() as RefreshResponse;
   if (typeof data.access_token !== 'string') throw new Error('OAuth refresh response has no access token');
   const nextRefresh = typeof data.refresh_token === 'string' ? encryptSecret(data.refresh_token) : undefined;
-  updateEndpointQuotaTokens(endpoint.id, encryptSecret(data.access_token), getJwtExpiry(data.access_token), nextRefresh);
+  await updateEndpointQuotaTokens(endpoint.id, encryptSecret(data.access_token), getJwtExpiry(data.access_token), nextRefresh);
   return data.access_token;
 }
 

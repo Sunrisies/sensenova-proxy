@@ -2,8 +2,8 @@ const SESSION_COOKIE = 'sensenova_admin_session';
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 
 function sessionSecret(): string {
-  const secret = process.env.ADMIN_SESSION_SECRET || process.env.TOKEN_ENCRYPTION_KEY;
-  if (!secret) throw new Error('ADMIN_SESSION_SECRET or TOKEN_ENCRYPTION_KEY is required');
+  const secret = process.env.ADMIN_SESSION_SECRET;
+  if (!secret) throw new Error('ADMIN_SESSION_SECRET is required');
   return secret;
 }
 

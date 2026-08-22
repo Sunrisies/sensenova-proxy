@@ -12,10 +12,10 @@ export async function GET(request: NextRequest) {
     : now - (range === '7d' ? 7 : range === '30d' ? 30 : 1) * 86400;
   const endpointId = params.get('endpoint_id') || undefined;
   const model = params.get('model') || undefined;
-  const endpoints = getAllEndpoints().map(endpoint => ({
+  const endpoints = (await getAllEndpoints()).map(endpoint => ({
     id: endpoint.id,
     name: endpoint.name,
     api_key: endpoint.api_key.slice(0, 6) + '***' + endpoint.api_key.slice(-4),
   }));
-  return NextResponse.json({ range, since, endpoints, models: getLoggedModels(), stats: getUsageStats({ since, endpointId, model }) });
+  return NextResponse.json({ range, since, endpoints, models: await getLoggedModels(), stats: await getUsageStats({ since, endpointId, model }) });
 }

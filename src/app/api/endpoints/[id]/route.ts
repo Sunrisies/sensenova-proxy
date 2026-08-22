@@ -7,7 +7,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const endpoint = getEndpoint(id);
+  const endpoint = await getEndpoint(id);
   if (!endpoint) {
     return NextResponse.json({ error: 'Endpoint not found' }, { status: 404 });
   }
@@ -37,7 +37,7 @@ export async function PUT(
     delete endpointInput.console_access_token;
     delete endpointInput.console_access_expires_at;
     delete endpointInput.console_refresh_token;
-    const updated = updateEndpoint(id, endpointInput);
+    const updated = await updateEndpoint(id, endpointInput);
     if (!updated) {
       return NextResponse.json({ error: 'Endpoint not found' }, { status: 404 });
     }
@@ -52,7 +52,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const deleted = deleteEndpoint(id);
+  const deleted = await deleteEndpoint(id);
   if (!deleted) {
     return NextResponse.json({ error: 'Endpoint not found' }, { status: 404 });
   }

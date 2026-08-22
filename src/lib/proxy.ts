@@ -1,18 +1,11 @@
-import { getHealthyEndpoints, getAvailableEndpoints, markUnhealthy, markHealthy, markRateLimited, addLog } from './db';
-import fs from 'fs';
-import path from 'path';
+import { getHealthyEndpoints, getAvailableEndpoints, markUnhealthy, markHealthy, markRateLimited, addLog, addRequestAttempt, updateRequestAttempt } from './db';
+import { v4 as uuidv4 } from 'uuid';
 
 const REQUEST_TIMEOUT = 30000;
-const DEBUG_LOG = path.join(process.cwd(), 'debug.log');
-
 function debugLog(msg: string) {
-  const line = `[${new Date().toISOString()}] ${msg}\n`;
-  console.log(`DEBUG_LOG:${DEBUG_LOG}`)
-  fs.appendFileSync(DEBUG_LOG, line);
-  console.log(line.trim());
+  console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-// Event emitter for real-time logs
 type LogListener = (log: unknown) => void;
 const logListeners: Set<LogListener> = new Set();
 
@@ -25,17 +18,28 @@ function emitLog(log: unknown) {
   logListeners.forEach(listener => listener(log));
 }
 
+function readUsage(payload: unknown): { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } {
+  const usage = (payload as { usage?: unknown } | null)?.usage;
+  if (!usage || typeof usage !== 'object') return {};
+  const value = usage as Record<string, unknown>;
+  return {
+    prompt_tokens: typeof value.prompt_tokens === 'number' ? value.prompt_tokens : undefined,
+    completion_tokens: typeof value.completion_tokens === 'number' ? value.completion_tokens : undefined,
+    total_tokens: typeof value.total_tokens === 'number' ? value.total_tokens : undefined,
+  };
+}
+
 export async function proxyRequest(
   request: Request,
   path: string
 ): Promise<Response> {
   const method = request.method;
   const startTime = Date.now();
+  const requestId = uuidv4();
   const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
     ?? request.headers.get('x-real-ip')
     ?? 'unknown';
 
-  // Get body for non-GET/HEAD requests
   let body: ArrayBuffer | null = null;
   if (method !== 'GET' && method !== 'HEAD') {
     body = await request.arrayBuffer();
@@ -50,11 +54,9 @@ export async function proxyRequest(
         stream: parsed.stream === true,
       };
     } catch {
-      // Non-JSON requests are still transparently proxied.
     }
   }
 
-  // Build headers (exclude host, connection)
   const headers = new Headers();
   request.headers.forEach((value, key) => {
     const lower = key.toLowerCase();
@@ -63,10 +65,8 @@ export async function proxyRequest(
     }
   });
 
-  const healthyEndpoints = getHealthyEndpoints();
-  const availableEndpoints = getAvailableEndpoints();
-  // Health checks are advisory. If every key is marked unhealthy, still try
-  // each enabled key so a transient /models failure cannot cause a 503.
+  const healthyEndpoints = await getHealthyEndpoints();
+  const availableEndpoints = await getAvailableEndpoints();
   const endpoints = healthyEndpoints.length > 0 ? healthyEndpoints : availableEndpoints;
   debugLog(`[PROXY] method=${method} path=${path} healthyEndpoints=${healthyEndpoints.length} availableEndpoints=${availableEndpoints.length}`);
 
@@ -86,12 +86,8 @@ export async function proxyRequest(
   let switched = false;
   const switchChain: string[] = [];
 
-  // Each configured endpoint represents one URL + API key pair. Try every
-  // available pair so a 429 can fail over without changing the model.
   for (let attempt = 0; attempt < endpoints.length; attempt++) {
-    // Pick endpoint: first attempt uses priority order, subsequent attempts try next
     const endpoint = endpoints[attempt % endpoints.length];
-    // Strip /v1 prefix from path since endpoint URL already includes it
     const cleanPath = path.replace(/^v1\//, '');
     const query = new URL(request.url).search;
     const targetUrl = `${endpoint.url}/${cleanPath}${query}`;
@@ -117,30 +113,28 @@ export async function proxyRequest(
       debugLog(`[PROXY] response status=${response.status}`);
       switchChain.push(`${endpoint.name} (${response.status})`);
 
-      // 429 can fail over for this request, but it does not mean the endpoint
-      // is unhealthy. Only HTTP 500 marks an endpoint unhealthy.
       if (response.status === 429 || response.status === 500) {
         const errorText = await response.text().catch(() => 'Unknown error');
         if (response.status === 500) {
-          markUnhealthy(endpoint.id);
+          await markUnhealthy(endpoint.id);
         } else {
-          markRateLimited(endpoint.id);
+          await markRateLimited(endpoint.id);
         }
         lastError = `HTTP ${response.status}: ${errorText}`;
+        await addRequestAttempt({ request_id: requestId, endpoint_id: endpoint.id, endpoint_name: endpoint.name, method, path, status: response.status, duration: Date.now() - startTime, success: false, error: lastError, model: requestInfo.model });
         debugLog(`[PROXY] retryable status=${response.status}; switching endpoint`);
         switched = true;
         continue;
       }
 
-      // Success - log and return. For SSE, collect usage and first-token timing
-      // while passing every byte through unchanged.
+      const attemptId = await addRequestAttempt({ request_id: requestId, endpoint_id: endpoint.id, endpoint_name: endpoint.name, method, path, status: response.status, duration: Date.now() - startTime, success: response.status < 400, model: requestInfo.model });
+
       const duration = Date.now() - startTime;
-      // 400/403/404/408 and other non-500 responses mean the endpoint was
-      // reachable. Keep it healthy even when the request itself is invalid.
-      markHealthy(endpoint.id);
+      await markHealthy(endpoint.id);
 
       const baseLog = {
         endpoint_id: endpoint.id,
+        request_id: requestId,
         endpoint_name: endpoint.name,
         method,
         path,
@@ -155,7 +149,6 @@ export async function proxyRequest(
         client_ip: clientIp,
       };
 
-      // Return response with CORS headers
       const responseHeaders = new Headers(response.headers);
       responseHeaders.set('Access-Control-Allow-Origin', '*');
       responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -169,6 +162,9 @@ export async function proxyRequest(
         let promptTokens: number | undefined;
         let completionTokens: number | undefined;
         let totalTokens: number | undefined;
+        let finalized = false;
+        let downstreamCancelled = false;
+        let controllerClosed = false;
 
         function parseSseLine(line: string) {
           if (!line.startsWith('data:')) return;
@@ -183,39 +179,83 @@ export async function proxyRequest(
               if (typeof usage.total_tokens === 'number') totalTokens = usage.total_tokens;
             }
           } catch {
-            // A partial SSE frame is handled on the next chunk.
           }
         }
 
-        const stream = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-          transform(chunk, controller) {
-            const text = decoder.decode(chunk, { stream: true });
-            if (firstByteMs === undefined && text.trim()) firstByteMs = Date.now() - startTime;
-            buffer += text;
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
-            for (const line of lines) {
-              parseSseLine(line);
+        async function finalize(error?: string, status = error ? 502 : baseLog.status) {
+          if (finalized) return;
+          finalized = true;
+          const completed = {
+            ...baseLog,
+            status,
+            success: !error && baseLog.success,
+            duration: Date.now() - startTime,
+            error: error ?? baseLog.error,
+            first_byte_ms: firstByteMs,
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: totalTokens,
+          };
+          await addLog(completed);
+          emitLog({ ...completed, created_at: Math.floor(Date.now() / 1000) });
+          if (error) await updateRequestAttempt(attemptId, { status, success: false, error, duration: completed.duration });
+        }
+
+        const reader = response.body.getReader();
+        const stream = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const { done, value } = await reader.read();
+              if (done) {
+                const finalText = decoder.decode();
+                buffer += finalText;
+                for (const line of buffer.split('\n')) parseSseLine(line);
+                await finalize(downstreamCancelled ? 'SSE stream cancelled: client disconnected' : undefined, downstreamCancelled ? 499 : baseLog.status);
+                if (!controllerClosed) {
+                  controllerClosed = true;
+                  controller.close();
+                }
+                return;
+              }
+              const text = decoder.decode(value, { stream: true });
+              if (firstByteMs === undefined && text.trim()) firstByteMs = Date.now() - startTime;
+              buffer += text;
+              const lines = buffer.split('\n');
+              buffer = lines.pop() ?? '';
+              for (const line of lines) parseSseLine(line);
+              if (!downstreamCancelled && !controllerClosed) controller.enqueue(value);
+            } catch (error) {
+              if (downstreamCancelled) {
+                await finalize('SSE stream cancelled: client disconnected', 499);
+                return;
+              }
+              await finalize(`SSE stream failed: ${error instanceof Error ? error.message : String(error)}`);
+              if (!controllerClosed) {
+                controllerClosed = true;
+                controller.error(error);
+              }
             }
-            controller.enqueue(encoder.encode(text));
           },
-          flush(controller) {
-            const finalText = decoder.decode();
-            buffer += finalText;
-            for (const line of buffer.split('\n')) parseSseLine(line);
-            controller.enqueue(encoder.encode(finalText));
-            const completed = {
-              ...baseLog,
-              duration: Date.now() - startTime,
-              first_byte_ms: firstByteMs,
-              prompt_tokens: promptTokens,
-              completion_tokens: completionTokens,
-              total_tokens: totalTokens,
-            };
-            addLog(completed);
-            emitLog({ ...completed, created_at: Math.floor(Date.now() / 1000) });
+          async cancel(reason) {
+            downstreamCancelled = true;
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const text = decoder.decode(value, { stream: true });
+                buffer += text;
+                const lines = buffer.split('\n');
+                buffer = lines.pop() ?? '';
+                for (const line of lines) parseSseLine(line);
+              }
+              buffer += decoder.decode();
+              for (const line of buffer.split('\n')) parseSseLine(line);
+              await finalize(`SSE stream cancelled: ${String(reason ?? 'client disconnected')}`, 499);
+            } catch {
+              await finalize(`SSE stream cancelled: client disconnected`, 499);
+            }
           },
-        }));
+        });
 
         return new Response(stream, {
           status: response.status,
@@ -224,8 +264,15 @@ export async function proxyRequest(
         });
       }
 
-      const logEntry = { ...baseLog };
-      addLog(logEntry);
+      let usage: ReturnType<typeof readUsage> = {};
+      if (response.status < 400 && typeof response.clone === 'function') {
+        try {
+          usage = readUsage(await response.clone().json());
+        } catch {
+        }
+      }
+      const logEntry = { ...baseLog, ...usage };
+      await addLog(logEntry);
       emitLog({ ...logEntry, created_at: Math.floor(Date.now() / 1000) });
 
       return new Response(response.body, {
@@ -237,17 +284,18 @@ export async function proxyRequest(
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       debugLog(`[PROXY] error: ${errorMessage}`);
       switchChain.push(`${endpoint.name} (network error)`);
-      markUnhealthy(endpoint.id);
+      await markUnhealthy(endpoint.id);
+      await addRequestAttempt({ request_id: requestId, endpoint_id: endpoint.id, endpoint_name: endpoint.name, method, path, status: 0, duration: Date.now() - startTime, success: false, error: errorMessage, model: requestInfo.model });
       lastError = errorMessage;
       switched = true;
       continue;
     }
   }
 
-  // All endpoints failed
   const duration = Date.now() - startTime;
   const logEntry = {
     endpoint_id: endpoints[0].id,
+    request_id: requestId,
     endpoint_name: endpoints[0].name,
     method,
     path,
@@ -257,8 +305,10 @@ export async function proxyRequest(
     switched,
     error: `All endpoints failed: ${lastError}`,
     switch_chain: switchChain.join(' -> '),
+    model: requestInfo.model,
+    stream: requestInfo.stream,
   };
-  addLog(logEntry);
+  await addLog(logEntry);
   emitLog({ ...logEntry, created_at: Math.floor(Date.now() / 1000) });
 
   return new Response(JSON.stringify({ error: 'All endpoints failed', details: lastError }), {
