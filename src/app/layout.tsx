@@ -1,11 +1,29 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { headers } from "next/headers";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 
+function NavLink({ href, pathname, children }: { href: string; pathname: string; children: React.ReactNode }) {
+  const isActive = pathname === href || (href !== "/" && pathname.startsWith(href));
+  return (
+    <Link
+      href={href}
+      className={`text-sm transition-colors py-1 ${
+        isActive
+          ? "text-foreground font-medium border-b-2 border-foreground pb-1.5"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {children}
+    </Link>
+  );
+}
+
 export const metadata: Metadata = {
   title: "SenseNova Proxy",
   description: "SenseNova 自动故障转移代理",
+  viewport: { width: "device-width", initialScale: 1 },
 };
 
 export default async function RootLayout({
@@ -24,22 +42,14 @@ export default async function RootLayout({
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
               <div className="flex h-14 items-center justify-between">
                 <div className="flex items-center gap-6">
-                  <a href="/" className="font-semibold text-lg">
+                  <Link href="/" className="font-semibold text-lg">
                     SenseNova Proxy
-                  </a>
+                  </Link>
                   <div className="flex gap-4">
-                    <a href="/" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-                      仪表盘
-                    </a>
-                    <a href="/endpoints" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-                      端点管理
-                    </a>
-                    <a href="/stats" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-                      用量统计
-                    </a>
-                    <a href="/logs" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-                      实时日志
-                    </a>
+                    <NavLink href="/" pathname={pathname} children="仪表盘" />
+                    <NavLink href="/endpoints" pathname={pathname} children="端点管理" />
+                    <NavLink href="/stats" pathname={pathname} children="用量统计" />
+                    <NavLink href="/logs" pathname={pathname} children="实时日志" />
                   </div>
                 </div>
                 <div className="text-sm text-muted-foreground">
