@@ -1,20 +1,29 @@
 services:
   sensenova-proxy:
-    build: .
-    ports:
-      - "80:80"
-      - "443:443"
+    image: sensenova-proxy:latest
+    expose:
+      - "3001"
     env_file: .env
     environment:
       - NODE_ENV=production
-    volumes:
-      - caddy-data:/data
-      - caddy-config:/config
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/status"]
       interval: 30s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - sensenova-proxy
     restart: unless-stopped
 
 volumes:

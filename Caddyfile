@@ -1,0 +1,20 @@
+{
+  servers {
+    protocols h1
+  }
+
+  http_port 80
+  https_port 443
+
+  auto_https disable_redirects
+}
+proxy.sunrise1024.top {
+  reverse_proxy sensenova-proxy:3001 {
+    flush_interval -1
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+    transport http {
+      read_buffer 65536
+    }
+  }
+}
