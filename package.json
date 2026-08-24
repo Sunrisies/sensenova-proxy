@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "deploy": "bash deploy/push.sh"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

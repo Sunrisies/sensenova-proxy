@@ -197,23 +197,26 @@ export default function Dashboard() {
                   {endpointUsage?.authorization === "valid" && (
                     <div className="mt-4 space-y-3">
                       {Object.entries(models).map(([model, value]) => {
-                        const percent = Math.max(0, Math.min(100, Math.round(value * 10) / 10));
+                        const percent = Math.max(0, Math.min(100, Math.round(Number(value) * 10) / 10));
                         const quotaInfo = getModelQuotaInfo(model);
                         const remaining = quotaInfo ? Math.round((percent / 100) * quotaInfo.max) : null;
-                        const displayName = quotaInfo?.displayName ?? model;
+                        const displayName = quotaInfo?.displayName ?? null;
+                        const label = displayName || <><span className="text-slate-700">{model}</span><span className="ml-2 text-amber-600">（未知模型）</span></>;
                         return (
                           <div key={model}>
                             <div className="mb-1.5 flex items-center justify-between text-xs">
-                              <span className="truncate pr-4 text-slate-700">{displayName}</span>
+                              <span className="truncate pr-4">{label}</span>
                               <span className="shrink-0 tabular-nums font-medium text-slate-900">{percent}%</span>
                             </div>
                             <div className="h-2 overflow-hidden rounded-full bg-slate-100">
                               <div className={`h-full rounded-full transition-all ${getBarColor(percent)}`} style={{ width: `${percent}%` }} />
                             </div>
-                            {quotaInfo && (
+                            {quotaInfo ? (
                               <div className="mt-1 text-[10px] text-slate-500">
                                 剩余 <span className="font-medium text-slate-700">{remaining}</span> / {quotaInfo.max} 次（每{quotaInfo.period}）
                               </div>
+                            ) : (
+                              <div className="mt-1 text-[10px] text-slate-400">无配额数据</div>
                             )}
                           </div>
                         );

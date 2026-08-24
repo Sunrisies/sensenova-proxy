@@ -55,3 +55,7 @@ next-env.d.ts
 # deployment artifacts
 *.tar
 *.tar.gz
+.deploy-tmp
+
+# local deployment target
+/deploy/server.local.env
