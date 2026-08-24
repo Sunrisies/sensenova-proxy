@@ -7,7 +7,6 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run",
     "deploy": "bash deploy/push.sh"
   },
   "dependencies": {
@@ -32,12 +31,9 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/uuid": "^10.0.0",
-    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9",
     "eslint-config-next": "16.3.1",
-    "jsdom": "^30.0.1",
     "tailwindcss": "^4",
-    "typescript": "^5",
-    "vitest": "^4.1.11"
+    "typescript": "^5"
   }
 }
