@@ -1,3 +1,13 @@
+{
+  servers {
+    protocols h1
+  }
+
+  http_port 80
+  https_port 443
+
+  auto_https disable_redirects
+}
 proxy.sunrise1024.top {
   reverse_proxy localhost:3001 {
     flush_interval -1

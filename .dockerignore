@@ -13,3 +13,5 @@ audit-report.md
 AGENTS.md
 *.tsbuildinfo
 build
+sensenova.tar
+*.tar.gz

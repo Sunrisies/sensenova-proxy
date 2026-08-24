@@ -44,6 +44,39 @@ function formatExpiry(expiresAt?: number): string {
   return hours > 0 ? `${hours}小时${minutes}分后刷新` : `${Math.max(minutes, 1)}分钟后刷新`;
 }
 
+interface ModelQuotaInfo {
+  displayName: string;
+  max: number;
+  period: string;
+}
+
+const MODEL_QUOTAS: Record<string, ModelQuotaInfo> = {
+  "sensenova-6.8-flash-lite": {
+    displayName: "SenseNova 6.8 Flash Lite",
+    max: 1500,
+    period: "5小时",
+  },
+  "sensenova-u1-fast": {
+    displayName: "SenseNova U1 Fast",
+    max: 1500,
+    period: "5小时",
+  },
+  "deepseek-v4-flash": {
+    displayName: "DeepSeek V4 Flash",
+    max: 500,
+    period: "5小时",
+  },
+  "glm-5.2": {
+    displayName: "GLM-5.2",
+    max: 500,
+    period: "5小时",
+  },
+};
+
+function getModelQuotaInfo(modelId: string): ModelQuotaInfo | undefined {
+  return MODEL_QUOTAS[modelId];
+}
+
 function getBarColor(percent: number): string {
   if (percent > 50) return "bg-emerald-500";
   if (percent > 20) return "bg-amber-500";
@@ -165,15 +198,23 @@ export default function Dashboard() {
                     <div className="mt-4 space-y-3">
                       {Object.entries(models).map(([model, value]) => {
                         const percent = Math.max(0, Math.min(100, Math.round(value * 10) / 10));
+                        const quotaInfo = getModelQuotaInfo(model);
+                        const remaining = quotaInfo ? Math.round((percent / 100) * quotaInfo.max) : null;
+                        const displayName = quotaInfo?.displayName ?? model;
                         return (
                           <div key={model}>
                             <div className="mb-1.5 flex items-center justify-between text-xs">
-                              <span className="truncate pr-4 text-slate-700">{model}</span>
+                              <span className="truncate pr-4 text-slate-700">{displayName}</span>
                               <span className="shrink-0 tabular-nums font-medium text-slate-900">{percent}%</span>
                             </div>
                             <div className="h-2 overflow-hidden rounded-full bg-slate-100">
                               <div className={`h-full rounded-full transition-all ${getBarColor(percent)}`} style={{ width: `${percent}%` }} />
                             </div>
+                            {quotaInfo && (
+                              <div className="mt-1 text-[10px] text-slate-500">
+                                剩余 <span className="font-medium text-slate-700">{remaining}</span> / {quotaInfo.max} 次（每{quotaInfo.period}）
+                              </div>
+                            )}
                           </div>
                         );
                       })}
