@@ -45,7 +45,7 @@ ssh "$REMOTE" "mkdir -p '$DEPLOY_PATH'"
 scp "$ARCHIVE" "$REMOTE:$DEPLOY_PATH/"
 
 echo '[5/6] Loading image and recreating container...'
-ssh "$REMOTE" "docker load -i '$REMOTE_ARCHIVE' && docker rm -f sensenova-proxy www_sensenova-proxy_1 >/dev/null 2>&1 || true; docker run -d --name sensenova-proxy --restart unless-stopped --env-file '$DEPLOY_PATH/.env' -p 127.0.0.1:3001:3001 '$IMAGE_NAME:$IMAGE_TAG'; rm -f '$REMOTE_ARCHIVE'"
+ssh "$REMOTE" "docker load -i '$REMOTE_ARCHIVE' && docker rm -f sensenova-proxy www_sensenova-proxy_1 >/dev/null 2>&1 || true; docker run -d --name sensenova-proxy --restart unless-stopped --network webnet --env-file '$DEPLOY_PATH/.env' -p 127.0.0.1:3001:3001 '$IMAGE_NAME:$IMAGE_TAG'; rm -f '$REMOTE_ARCHIVE'"
 
 echo '[6/6] Verifying container health...'
 ssh "$REMOTE" 'for i in $(seq 1 20); do status=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3001/api/status || true); if [ "$status" = "200" ] || [ "$status" = "401" ]; then exit 0; fi; sleep 2; done; docker ps -a --filter name=sensenova-proxy; docker logs --tail=100 sensenova-proxy; exit 1'

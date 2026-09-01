@@ -56,6 +56,11 @@ const MODEL_QUOTAS: Record<string, ModelQuotaInfo> = {
     max: 1500,
     period: "5小时",
   },
+  "sensenova-u1.5-lite": {
+    displayName: "SenseNova U1.5 Lite",
+    max: 1500,
+    period: "5小时",
+  },
   "sensenova-u1-fast": {
     displayName: "SenseNova U1 Fast",
     max: 1500,
