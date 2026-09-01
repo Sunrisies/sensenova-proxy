@@ -50,43 +50,84 @@ async function getAccessToken(endpoint: Endpoint, forceRefresh = false): Promise
   return { token: decryptSecret(endpoint.console_access_token!), expiresAt };
 }
 
-async function getModelIds(endpoint: Endpoint): Promise<string[]> {
+export interface PoolWindow {
+  limit: number;
+  used: number;
+  remaining: number;
+  reset_at: number;
+}
+
+export interface QuotaPool {
+  id: string;
+  name: string;
+  model_ids: string[];
+  window_5h: PoolWindow;
+  window_7d: PoolWindow;
+  pool_type: string;
+}
+
+interface PoolUsageResponse {
+  plan?: { id?: string; name?: string };
+  pools?: Array<{
+    id?: string;
+    name?: string;
+    model_ids?: string[];
+    window_5h?: { limit?: string; used?: string; remaining?: string; reset_at?: string };
+    window_7d?: { limit?: string; used?: string; remaining?: string; reset_at?: string };
+    pool_type?: string;
+  }>;
+}
+
+function parseWindow(window?: { limit?: string; used?: string; remaining?: string; reset_at?: string }): PoolWindow {
+  return {
+    limit: Number(window?.limit ?? 0),
+    used: Number(window?.used ?? 0),
+    remaining: Number(window?.remaining ?? 0),
+    reset_at: Number(window?.reset_at ?? 0),
+  };
+}
+
+async function requestPoolUsage(accountId: string, token: string): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const response = await fetch(`${endpoint.url}/models`, { headers: { Authorization: `Bearer ${endpoint.api_key}` }, signal: controller.signal });
-    if (!response.ok) throw new Error(`Model list request failed (${response.status})`);
-    const data = await response.json() as { data?: unknown } | unknown[];
-    const models = Array.isArray(data) ? data : data.data;
-    if (!Array.isArray(models)) throw new Error('Model list response is invalid');
-    return models.flatMap(model => typeof model === 'object' && model && typeof (model as { id?: unknown }).id === 'string' ? [(model as { id: string }).id] : []);
+    const params = new URLSearchParams({ account_id: accountId });
+    return await fetch(`https://platform.sensenova.cn/lite/console/v1/tokenplan/pool-usage?${params}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function requestQuota(accountId: string, modelIds: string[], token: string): Promise<Response> {
-  const params = new URLSearchParams({ account_id: accountId });
-  modelIds.forEach(id => params.append('model_ids', id));
-  return fetch(`https://platform.sensenova.cn/lite/console/v1/user/coding-plan/usages?${params}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-  });
-}
-
 export async function getEndpointQuota(endpoint: Endpoint) {
   if (!authorizationConfigured(endpoint)) return { id: endpoint.id, name: endpoint.name, authorization: 'not_configured' as const };
   try {
-    const modelIds = await getModelIds(endpoint);
-    if (!modelIds.length) throw new Error('No models are available for this endpoint');
     let { token, expiresAt } = await getAccessToken(endpoint);
-    let response = await requestQuota(endpoint.sensenova_account_id!, modelIds, token);
+    let response = await requestPoolUsage(endpoint.sensenova_account_id!, token);
     if (response.status === 401) {
       ({ token, expiresAt } = await getAccessToken(endpoint, true));
-      response = await requestQuota(endpoint.sensenova_account_id!, modelIds, token);
+      response = await requestPoolUsage(endpoint.sensenova_account_id!, token);
     }
     if (!response.ok) throw new Error(`Quota request failed (${response.status})`);
-    const payload = await response.json() as { model_remaining_percent?: Record<string, number> };
-    return { id: endpoint.id, name: endpoint.name, authorization: 'valid' as const, expires_at: expiresAt, model_remaining_percent: payload.model_remaining_percent ?? {} };
+    const payload = await response.json() as PoolUsageResponse;
+    const pools: QuotaPool[] = (payload.pools ?? []).map((pool) => ({
+      id: pool.id ?? '',
+      name: pool.name ?? '未命名积分池',
+      model_ids: pool.model_ids ?? [],
+      window_5h: parseWindow(pool.window_5h),
+      window_7d: parseWindow(pool.window_7d),
+      pool_type: pool.pool_type ?? 'default',
+    }));
+    return {
+      id: endpoint.id,
+      name: endpoint.name,
+      authorization: 'valid' as const,
+      expires_at: expiresAt,
+      plan: payload.plan?.name ?? null,
+      pools,
+    };
   } catch (error) {
     return { id: endpoint.id, name: endpoint.name, authorization: 'invalid' as const, error: error instanceof Error ? error.message : 'Quota request failed' };
   }

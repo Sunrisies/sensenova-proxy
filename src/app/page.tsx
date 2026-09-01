@@ -22,12 +22,29 @@ interface StatusResponse {
   endpoints: EndpointStatus[];
 }
 
+interface PoolWindow {
+  limit: number;
+  used: number;
+  remaining: number;
+  reset_at: number;
+}
+
+interface QuotaPool {
+  id: string;
+  name: string;
+  model_ids: string[];
+  window_5h: PoolWindow;
+  window_7d: PoolWindow;
+  pool_type: string;
+}
+
 interface UsageEndpoint {
   id: string;
   name: string;
   authorization: "not_configured" | "valid" | "invalid";
   expires_at?: number;
-  model_remaining_percent?: Record<string, number>;
+  plan?: string | null;
+  pools?: QuotaPool[];
   error?: string;
 }
 
@@ -44,48 +61,45 @@ function formatExpiry(expiresAt?: number): string {
   return hours > 0 ? `${hours}小时${minutes}分后刷新` : `${Math.max(minutes, 1)}分钟后刷新`;
 }
 
-interface ModelQuotaInfo {
-  displayName: string;
-  max: number;
-  period: string;
+function formatReset(resetAt: number): string {
+  if (!resetAt) return "";
+  const remaining = resetAt - Math.floor(Date.now() / 1000);
+  if (remaining <= 0) return "即将重置";
+  const days = Math.floor(remaining / 86400);
+  const hours = Math.floor((remaining % 86400) / 3600);
+  const minutes = Math.floor((remaining % 3600) / 60);
+  if (days > 0) return `${days}天${hours}小时后重置`;
+  if (hours > 0) return `${hours}小时${minutes}分后重置`;
+  return `${Math.max(minutes, 1)}分钟后重置`;
 }
 
-const MODEL_QUOTAS: Record<string, ModelQuotaInfo> = {
-  "sensenova-6.8-flash-lite": {
-    displayName: "SenseNova 6.8 Flash Lite",
-    max: 1500,
-    period: "5小时",
-  },
-  "sensenova-u1.5-lite": {
-    displayName: "SenseNova U1.5 Lite",
-    max: 1500,
-    period: "5小时",
-  },
-  "sensenova-u1-fast": {
-    displayName: "SenseNova U1 Fast",
-    max: 1500,
-    period: "5小时",
-  },
-  "deepseek-v4-flash": {
-    displayName: "DeepSeek V4 Flash",
-    max: 500,
-    period: "5小时",
-  },
-  "glm-5.2": {
-    displayName: "GLM-5.2",
-    max: 500,
-    period: "5小时",
-  },
-};
-
-function getModelQuotaInfo(modelId: string): ModelQuotaInfo | undefined {
-  return MODEL_QUOTAS[modelId];
+function formatTokens(value: number): string {
+  if (value >= 10000) return `${(value / 10000).toFixed(1)}万`;
+  return value % 1 === 0 ? String(value) : value.toFixed(1);
 }
 
 function getBarColor(percent: number): string {
   if (percent > 50) return "bg-emerald-500";
   if (percent > 20) return "bg-amber-500";
   return "bg-rose-500";
+}
+
+function QuotaWindow({ label, window }: { label: string; window: PoolWindow }) {
+  const percent = window.limit > 0 ? Math.max(0, Math.min(100, (window.remaining / window.limit) * 100)) : 0;
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-xs">
+        <span className="text-slate-600">{label}</span>
+        <span className="shrink-0 tabular-nums font-medium text-slate-900">
+          {formatTokens(window.remaining)} / {formatTokens(window.limit)}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+        <div className={`h-full rounded-full transition-all ${getBarColor(percent)}`} style={{ width: `${percent}%` }} />
+      </div>
+      <div className="mt-0.5 text-[10px] text-slate-400">{formatReset(window.reset_at)}</div>
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -170,7 +184,8 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {status.endpoints.map((endpoint) => {
             const endpointUsage = usageById.get(endpoint.id);
-            const models = endpointUsage?.model_remaining_percent ?? {};
+            const pools = endpointUsage?.pools ?? [];
+            const modelCount = new Set(pools.flatMap((pool) => pool.model_ids)).size;
             return (
               <Card key={endpoint.id} className="overflow-hidden border-slate-200 bg-white text-slate-900 shadow-lg shadow-slate-200/60">
                 <CardContent className="p-4">
@@ -193,46 +208,41 @@ export default function Dashboard() {
                   </div>
 
                   <div className="mt-4 flex items-center justify-between text-xs">
-                    <strong className="text-sm text-slate-800">模型剩余配额</strong>
+                    <strong className="text-sm text-slate-800">
+                      积分池配额
+                      {endpointUsage?.plan && <span className="ml-2 font-normal text-slate-500">{endpointUsage.plan}</span>}
+                    </strong>
                     <span className="text-slate-500">{endpointUsage?.authorization === "valid" ? formatExpiry(endpointUsage.expires_at) : "需要配额授权"}</span>
                   </div>
 
                   {endpointUsage?.authorization === "invalid" && <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{endpointUsage.error ?? "请在端点管理中重新授权"}</div>}
                   {endpointUsage?.authorization === "not_configured" && <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">请在端点管理中配置该账号的配额授权</div>}
                   {endpointUsage?.authorization === "valid" && (
-                    <div className="mt-4 space-y-3">
-                      {Object.entries(models).map(([model, value]) => {
-                        const percent = Math.max(0, Math.min(100, Math.round(Number(value) * 10) / 10));
-                        const quotaInfo = getModelQuotaInfo(model);
-                        const remaining = quotaInfo ? Math.round((percent / 100) * quotaInfo.max) : null;
-                        const displayName = quotaInfo?.displayName ?? null;
-                        const label = displayName || <><span className="text-slate-700">{model}</span><span className="ml-2 text-amber-600">（未知模型）</span></>;
-                        return (
-                          <div key={model}>
-                            <div className="mb-1.5 flex items-center justify-between text-xs">
-                              <span className="truncate pr-4">{label}</span>
-                              <span className="shrink-0 tabular-nums font-medium text-slate-900">{percent}%</span>
-                            </div>
-                            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                              <div className={`h-full rounded-full transition-all ${getBarColor(percent)}`} style={{ width: `${percent}%` }} />
-                            </div>
-                            {quotaInfo ? (
-                              <div className="mt-1 text-[10px] text-slate-500">
-                                剩余 <span className="font-medium text-slate-700">{remaining}</span> / {quotaInfo.max} 次（每{quotaInfo.period}）
-                              </div>
-                            ) : (
-                              <div className="mt-1 text-[10px] text-slate-400">无配额数据</div>
-                            )}
+                    <div className="mt-4 space-y-4">
+                      {pools.map((pool) => (
+                        <div key={pool.id} className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                          <div className="mb-2 flex items-center justify-between text-xs">
+                            <span className="font-medium text-slate-800">{pool.name}</span>
+                            <span className="text-slate-400">{pool.pool_type === "dedicated" ? "专属" : "通用"}</span>
                           </div>
-                        );
-                      })}
-                      {Object.keys(models).length === 0 && <div className="text-xs text-slate-500">该端点暂无模型配额数据</div>}
+                          <div className="space-y-2.5">
+                            <QuotaWindow label="5小时窗口" window={pool.window_5h} />
+                            <QuotaWindow label="7天窗口" window={pool.window_7d} />
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {pool.model_ids.map((modelId) => (
+                              <span key={modelId} className="rounded bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-500 ring-1 ring-slate-200">{modelId}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                      {pools.length === 0 && <div className="text-xs text-slate-500">该端点暂无积分池数据</div>}
                     </div>
                   )}
 
                   <div className="mt-4 flex items-center justify-between border-t border-slate-200 pt-3 text-[10px] text-slate-500">
                     <span>错误数 {endpoint.error_count}</span>
-                    <span>{Object.keys(models).length} 个模型</span>
+                    <span>{modelCount} 个模型</span>
                     <span>{endpoint.enabled ? "已启用" : "已禁用"}</span>
                   </div>
                 </CardContent>
