@@ -1,5 +1,6 @@
 import { getHealthyEndpoints, getAvailableEndpoints, markUnhealthy, markHealthy, markRateLimited, addLog, addRequestAttempt, updateRequestAttempt } from './db';
 import { v4 as uuidv4 } from 'uuid';
+import { estimatePromptTokens, usageWithFallback } from './tokens';
 
 const REQUEST_TIMEOUT = Number(process.env.PROXY_REQUEST_TIMEOUT_MS || 120000);
 function debugLog(msg: string) {
@@ -14,7 +15,7 @@ export function onLog(listener: LogListener) {
   return () => logListeners.delete(listener);
 }
 
-function emitLog(log: unknown) {
+export function emitLog(log: unknown) {
   logListeners.forEach(listener => listener(log));
 }
 
@@ -45,18 +46,6 @@ export async function proxyRequest(
     body = await request.arrayBuffer();
   }
 
-  let requestInfo: { model?: string; stream?: boolean } = {};
-  if (body) {
-    try {
-      const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as Record<string, unknown>;
-      requestInfo = {
-        model: typeof parsed.model === 'string' ? parsed.model : undefined,
-        stream: parsed.stream === true,
-      };
-    } catch {
-    }
-  }
-
   const headers = new Headers();
   request.headers.forEach((value, key) => {
     const lower = key.toLowerCase();
@@ -64,6 +53,25 @@ export async function proxyRequest(
       headers.set(key, value);
     }
   });
+
+  let requestInfo: { model?: string; stream?: boolean } = {};
+  let parsedBody: Record<string, unknown> | undefined;
+  let upstreamBody = body ? Buffer.from(body) : undefined;
+  if (body) {
+    try {
+      parsedBody = JSON.parse(Buffer.from(body).toString('utf8')) as Record<string, unknown>;
+      requestInfo = {
+        model: typeof parsedBody.model === 'string' ? parsedBody.model : undefined,
+        stream: parsedBody.stream === true,
+      };
+      if (requestInfo.stream && parsedBody.stream_options === undefined) {
+        upstreamBody = Buffer.from(JSON.stringify({ ...parsedBody, stream_options: { include_usage: true } }));
+        headers.delete('content-length');
+      }
+    } catch {
+    }
+  }
+  const promptTextTokens = estimatePromptTokens(parsedBody?.messages);
 
   const healthyEndpoints = await getHealthyEndpoints();
   const availableEndpoints = await getAvailableEndpoints();
@@ -81,6 +89,47 @@ export async function proxyRequest(
   endpoints.forEach((ep, i) => {
     debugLog(`[PROXY] endpoint[${i}] id=${ep.id} name=${ep.name} url=${ep.url} healthy=${ep.healthy}`);
   });
+
+  // 聚合所有健康端点的模型列表（GET /v1/models）
+  if (path === 'models' && method === 'GET') {
+    debugLog('[PROXY] Aggregating models from all healthy endpoints');
+    const results = await Promise.allSettled(
+      endpoints.map(async (ep) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        try {
+          const res = await fetch(`${ep.url}/models`, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${ep.api_key}` },
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          if (!res.ok) return [] as { id: string;[k: string]: unknown }[];
+          const data = await res.json() as { data?: { id: string;[k: string]: unknown }[] };
+          return (data.data ?? []).map(m => ({ ...m }));
+        } catch {
+          clearTimeout(timeoutId);
+          return [] as { id: string;[k: string]: unknown }[];
+        }
+      })
+    );
+
+    const seen = new Map<string, { id: string;[k: string]: unknown }>();
+    for (const r of results) {
+      if (r.status !== 'fulfilled') continue;
+      for (const m of r.value) {
+        if (!seen.has(m.id)) seen.set(m.id, m);
+      }
+    }
+    const models = [...seen.values()];
+    return new Response(JSON.stringify({ data: models, object: 'list' }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+    });
+  }
 
   let lastError: string | undefined;
   let switched = false;
@@ -105,7 +154,7 @@ export async function proxyRequest(
       const response = await fetch(targetUrl, {
         method,
         headers: requestHeaders,
-        body: body ? Buffer.from(body) : undefined,
+        body: upstreamBody,
         signal: controller.signal,
       });
 
@@ -156,12 +205,12 @@ export async function proxyRequest(
 
       if (requestInfo.stream && response.body) {
         const decoder = new TextDecoder();
-        const encoder = new TextEncoder();
         let firstByteMs: number | undefined;
         let buffer = '';
         let promptTokens: number | undefined;
         let completionTokens: number | undefined;
         let totalTokens: number | undefined;
+        let outputText = '';
         let finalized = false;
         let downstreamCancelled = false;
         let controllerClosed = false;
@@ -172,6 +221,8 @@ export async function proxyRequest(
           if (!value || value === '[DONE]') return;
           try {
             const event = JSON.parse(value) as Record<string, unknown>;
+            const delta = (event.choices as { delta?: { content?: unknown } }[] | undefined)?.[0]?.delta?.content;
+            if (typeof delta === 'string') outputText += delta;
             const usage = event.usage as Record<string, unknown> | undefined;
             if (usage) {
               if (typeof usage.prompt_tokens === 'number') promptTokens = usage.prompt_tokens;
@@ -185,6 +236,7 @@ export async function proxyRequest(
         async function finalize(error?: string, status = error ? 502 : baseLog.status) {
           if (finalized) return;
           finalized = true;
+          const usage = usageWithFallback({ prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: totalTokens }, promptTextTokens, outputText);
           const completed = {
             ...baseLog,
             status,
@@ -192,9 +244,7 @@ export async function proxyRequest(
             duration: Date.now() - startTime,
             error: error ?? baseLog.error,
             first_byte_ms: firstByteMs,
-            prompt_tokens: promptTokens,
-            completion_tokens: completionTokens,
-            total_tokens: totalTokens,
+            ...usage,
           };
           await addLog(completed);
           emitLog({ ...completed, created_at: Math.floor(Date.now() / 1000) });

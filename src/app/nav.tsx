@@ -20,6 +20,7 @@ export function AdminNav({ children }: { children: React.ReactNode }) {
                 <div className="flex gap-4">
                   <NavLink href="/">仪表盘</NavLink>
                   <NavLink href="/endpoints">端点管理</NavLink>
+                  <NavLink href="/test">测试</NavLink>
                   <NavLink href="/stats">用量统计</NavLink>
                   <NavLink href="/logs">实时日志</NavLink>
                 </div>

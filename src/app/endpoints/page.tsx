@@ -60,6 +60,9 @@ interface EndpointPanel {
   testing: boolean;
   testResult: TestResult | null;
   expanded: boolean;
+  streamMode: boolean;
+  streamOutput: string;
+  streamTiming: { ttfb?: number; total?: number } | null;
 }
 
 export default function EndpointsPage() {
@@ -96,6 +99,9 @@ export default function EndpointsPage() {
       testing: false,
       testResult: null,
       expanded: false,
+      streamMode: false,
+      streamOutput: "",
+      streamTiming: null,
     };
   }
 
@@ -142,34 +148,108 @@ export default function EndpointsPage() {
       return;
     }
 
-    updatePanel(ep.id, { testing: true, testResult: null });
+    if (panel.streamMode) {
+      // ─── 流式测试 ───
+      updatePanel(ep.id, { testing: true, testResult: null, streamOutput: "", streamTiming: null });
+      const startTime = Date.now();
+      let ttfb: number | undefined;
+      let accumulated = "";
 
-    try {
-      const res = await fetch(`/api/endpoints/${ep.id}/test`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: panel.selectedModel }),
-      });
+      try {
+        const res = await fetch(`/api/endpoints/${ep.id}/test`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: panel.selectedModel, stream: true }),
+        });
 
-      const data: TestResult = await res.json();
-      updatePanel(ep.id, { testing: false, testResult: data });
+        if (!res.ok) {
+          const data = await res.json();
+          updatePanel(ep.id, {
+            testing: false,
+            testResult: { success: false, status: res.status, duration: Date.now() - startTime, error: data.error },
+          });
+          return;
+        }
 
-      if (data.success) {
-        toast.success(`测试成功 (${data.duration}ms)`);
-      } else {
-        toast.error(`测试失败: ${data.error}`);
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error("No response body");
+        const decoder = new TextDecoder();
+        let sseBuffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const payload = line.slice(5).trim();
+            if (payload === "[DONE]") continue;
+            try {
+              const chunk = JSON.parse(payload);
+              const delta = chunk.choices?.[0]?.delta?.content;
+              if (typeof delta === "string") {
+                if (ttfb === undefined) ttfb = Date.now() - startTime;
+                accumulated += delta;
+                updatePanel(ep.id, { streamOutput: accumulated, streamTiming: { ttfb, total: Date.now() - startTime } });
+              }
+            } catch {}
+          }
+        }
+
+        updatePanel(ep.id, {
+          testing: false,
+          streamTiming: { ttfb, total: Date.now() - startTime },
+          testResult: {
+            success: true,
+            status: 200,
+            duration: Date.now() - startTime,
+            content: accumulated,
+            model: panel.selectedModel,
+          },
+        });
+      } catch (error) {
+        updatePanel(ep.id, {
+          testing: false,
+          testResult: {
+            success: false,
+            status: 0,
+            duration: Date.now() - startTime,
+            error: error instanceof Error ? error.message : "流式测试失败",
+          },
+        });
       }
-    } catch (error) {
-      updatePanel(ep.id, {
-        testing: false,
-        testResult: {
-          success: false,
-          status: 0,
-          duration: 0,
-          error: error instanceof Error ? error.message : "测试失败",
-        },
-      });
-      toast.error("测试请求失败");
+    } else {
+      // ─── 非流式测试 ───
+      updatePanel(ep.id, { testing: true, testResult: null });
+      try {
+        const res = await fetch(`/api/endpoints/${ep.id}/test`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: panel.selectedModel }),
+        });
+        const data: TestResult = await res.json();
+        updatePanel(ep.id, { testing: false, testResult: data });
+        if (data.success) {
+          toast.success(`测试成功 (${data.duration}ms)`);
+        } else {
+          toast.error(`测试失败: ${data.error}`);
+        }
+      } catch (error) {
+        updatePanel(ep.id, {
+          testing: false,
+          testResult: {
+            success: false,
+            status: 0,
+            duration: 0,
+            error: error instanceof Error ? error.message : "测试失败",
+          },
+        });
+        toast.error("测试请求失败");
+      }
     }
   }
 
@@ -436,6 +516,14 @@ export default function EndpointsPage() {
                             </Select>
 
                             <Button
+                              variant={panel.streamMode ? "default" : "outline"}
+                              size="sm"
+                              onClick={() => updatePanel(ep.id, { streamMode: !panel.streamMode })}
+                            >
+                              {panel.streamMode ? "⚡ 流式" : "📄 普通"}
+                            </Button>
+
+                            <Button
                               size="sm"
                               onClick={() => testEndpoint(ep)}
                               disabled={panel.testing || !panel.selectedModel}
@@ -443,14 +531,63 @@ export default function EndpointsPage() {
                               {panel.testing ? (
                                 <Loader2 className="h-4 w-4 animate-spin mr-1" />
                               ) : null}
-                              测试
+                              {panel.testing ? "测试中..." : "测试"}
                             </Button>
                           </>
                         )}
                       </div>
 
-                      {/* Test Result */}
-                      {panel.testResult && (
+                      {/* 流式输出框 */}
+                      {panel.streamMode && (panel.streamOutput || panel.testing) && (
+                        <div className="rounded-lg border border-slate-200 bg-slate-950 p-3">
+                          <div className="mb-1.5 flex items-center justify-between text-[10px]">
+                            <span className="text-slate-500">STREAM OUTPUT</span>
+                            <div className="flex items-center gap-3">
+                              {panel.streamTiming && (
+                                <span className="text-slate-600">
+                                  {panel.streamTiming.ttfb !== undefined && <span>首字 {panel.streamTiming.ttfb}ms · </span>}
+                                  {panel.streamTiming.total !== undefined && <span>总耗时 {panel.streamTiming.total}ms</span>}
+                                </span>
+                              )}
+                              {panel.streamOutput && !panel.testing && (
+                                <button
+                                  onClick={() => { navigator.clipboard.writeText(panel.streamOutput); toast.success("已复制到剪贴板"); }}
+                                  className="text-slate-500 hover:text-slate-300 transition-colors"
+                                  title="复制输出"
+                                >📋</button>
+                              )}
+                            </div>
+                          </div>
+                          <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-all font-mono text-sm leading-relaxed text-emerald-400">
+                            {panel.streamOutput}
+                            {panel.testing && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-emerald-400" />}
+                          </pre>
+                          {/* 完成状态栏 */}
+                          {!panel.testing && panel.testResult && (
+                            <div className="mt-2 flex items-center gap-2 border-t border-slate-800 pt-2 text-[11px]">
+                              {panel.testResult.success ? (
+                                <>
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-emerald-400">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />成功
+                                  </span>
+                                  {panel.testResult.model && <span className="text-slate-500">{panel.testResult.model}</span>}
+                                  <span className="ml-auto text-slate-600">{panel.testResult.duration}ms</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/10 px-2 py-0.5 text-rose-400">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />失败
+                                  </span>
+                                  <span className="text-rose-400/80">{panel.testResult.error}</span>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 非流式测试结果 */}
+                      {!panel.streamMode && panel.testResult && (
                         <div className={`p-3 rounded-lg text-sm ${panel.testResult.success ? "bg-green-50 border border-green-200" : "bg-red-50 border border-red-200"}`}>
                           <div className="flex items-center gap-2 mb-1">
                             {panel.testResult.success ? (

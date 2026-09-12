@@ -40,10 +40,12 @@ interface LogEntry {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  token_estimated?: boolean;
   cost?: number;
   switch_chain?: string;
   created_at: number;
   attempts?: { endpoint_name: string; status: number; success: boolean; error?: string }[];
+  is_test?: boolean;
 }
 
 interface LogsResponse {
@@ -194,7 +196,7 @@ function formatTime(ts: number) {
 
 function formatTokens(log: LogEntry) {
   if (log.total_tokens == null) return "-";
-  return `${log.total_tokens.toLocaleString()}（入 ${log.prompt_tokens?.toLocaleString() ?? "-"} / 出 ${log.completion_tokens?.toLocaleString() ?? "-"}）`;
+  return `${log.total_tokens.toLocaleString()}（入 ${log.prompt_tokens?.toLocaleString() ?? "-"} / 出 ${log.completion_tokens?.toLocaleString() ?? "-"}）${log.token_estimated ? " · 估算" : ""}`;
 }
 
 function formatLatency(log: LogEntry) {
@@ -227,6 +229,7 @@ function LogRow({ log }: { log: LogEntry }) {
           <div className="flex items-center gap-1">
             <Badge variant="outline">{log.stream ? "流式" : "非流式"}</Badge>
             {log.switched && <Badge variant="outline" className="text-orange-500">已切换</Badge>}
+            {log.is_test && <Badge variant="outline" className="border-sky-200 text-sky-600">测试</Badge>}
           </div>
         </TableCell>
         <TableCell className="text-muted-foreground">{formatTokens(log)}</TableCell>

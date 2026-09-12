@@ -44,6 +44,15 @@ async function createIndexSafe(p: any, sql: string): Promise<void> {
   }
 }
 
+async function addColumnSafe(p: any, sql: string): Promise<void> {
+  try {
+    await p.query(sql);
+  } catch (e) {
+    const err = e as mysql.QueryError;
+    if (err.errno !== 1060) throw e;
+  }
+}
+
 async function initializePool(): Promise<void> {
   const dbName = process.env.MYSQL_DATABASE || 'sensenova_proxy';
   const adminOptions: mysql.PoolOptions = {
@@ -117,6 +126,7 @@ async function initializePool(): Promise<void> {
       prompt_tokens INT,
       completion_tokens INT,
       total_tokens INT,
+      token_estimated TINYINT(1) DEFAULT 0,
       cost DOUBLE,
       switch_chain TEXT,
       is_test TINYINT(1) DEFAULT 0,
@@ -152,6 +162,7 @@ async function initializePool(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
+  await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN token_estimated TINYINT(1) DEFAULT 0 AFTER total_tokens');
   await createIndexSafe(p, 'CREATE INDEX idx_request_logs_created_at ON request_logs(created_at DESC)');
   await createIndexSafe(p, 'CREATE INDEX idx_endpoints_priority ON endpoints(priority ASC, weight DESC)');
   await createIndexSafe(p, 'CREATE INDEX idx_request_logs_request_id ON request_logs(request_id)');
@@ -223,6 +234,7 @@ export interface RequestLog {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  token_estimated?: boolean;
   cost?: number;
   switch_chain?: string;
   is_test?: boolean;
@@ -421,15 +433,15 @@ export async function addLog(log: Omit<RequestLog, 'id' | 'created_at'>): Promis
   const now = Math.floor(Date.now() / 1000);
 
   await db.query(
-    `INSERT INTO request_logs (id, request_id, endpoint_id, endpoint_name, method, path, status, duration, success, switched, error, model, stream, client_ip, first_byte_ms, prompt_tokens, completion_tokens, total_tokens, cost, switch_chain, is_test, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO request_logs (id, request_id, endpoint_id, endpoint_name, method, path, status, duration, success, switched, error, model, stream, client_ip, first_byte_ms, prompt_tokens, completion_tokens, total_tokens, token_estimated, cost, switch_chain, is_test, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id, log.request_id ?? null, log.endpoint_id, log.endpoint_name, log.method, log.path, log.status,
       log.duration, log.success ? 1 : 0, log.switched ? 1 : 0, log.error ?? null,
       log.model ?? null, log.stream ? 1 : 0, log.client_ip ?? null,
       log.first_byte_ms ?? null, log.prompt_tokens ?? null,
-      log.completion_tokens ?? null, log.total_tokens ?? null, log.cost ?? null,
-      log.switch_chain ?? null, log.is_test ? 1 : 0, now,
+      log.completion_tokens ?? null, log.total_tokens ?? null, log.token_estimated ? 1 : 0,
+      log.cost ?? null, log.switch_chain ?? null, log.is_test ? 1 : 0, now,
     ]
   );
   return id;
@@ -544,7 +556,8 @@ export async function getLogs(page: number, pageSize: number): Promise<{ logs: R
     first_byte_ms: r.first_byte_ms ? Number(r.first_byte_ms) : undefined,
     prompt_tokens: r.prompt_tokens ? Number(r.prompt_tokens) : undefined,
     completion_tokens: r.completion_tokens ? Number(r.completion_tokens) : undefined,
-    total_tokens: r.total_tokens ? Number(r.total_tokens) : undefined,
+    total_tokens: r.total_tokens !== null ? Number(r.total_tokens) : undefined,
+    token_estimated: Boolean(r.token_estimated),
     cost: r.cost ? Number(r.cost) : undefined,
     switch_chain: r.switch_chain ? String(r.switch_chain) : undefined,
     is_test: Boolean(r.is_test),
@@ -643,4 +656,27 @@ export async function getLoggedModels(): Promise<string[]> {
     "SELECT DISTINCT COALESCE(NULLIF(model, ''), '未知模型') AS model FROM request_logs WHERE is_test = 0 ORDER BY model"
   );
   return (rows as { model: string }[]).map(row => row.model);
+}
+
+export interface UsageTrendPoint {
+  bucket: number;
+  model: string;
+  requests: number;
+  total_tokens: number;
+}
+
+export async function getUsageTrends(since: number, bucketSeconds: number): Promise<UsageTrendPoint[]> {
+  const [rows] = await poolQuery(`
+    SELECT FLOOR(created_at / ?) * ? AS bucket,
+      COALESCE(NULLIF(model, ''), '未知模型') AS model,
+      COUNT(*) AS requests,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens
+    FROM request_logs
+    WHERE is_test = 0 AND created_at >= ?
+    GROUP BY FLOOR(created_at / ?) * ?, COALESCE(NULLIF(model, ''), '未知模型')
+    ORDER BY bucket ASC, model ASC
+  `, [bucketSeconds, bucketSeconds, since, bucketSeconds, bucketSeconds]);
+  return (rows as Record<string, unknown>[]).map(row => ({
+    bucket: Number(row.bucket), model: String(row.model), requests: Number(row.requests), total_tokens: Number(row.total_tokens),
+  }));
 }

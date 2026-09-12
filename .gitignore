@@ -41,6 +41,7 @@ debug-*.log
 # local review notes
 *.local.md
 audit-report.md
+.superpowers/
 
 # env files (can opt-in for committing if needed)
 .env*
