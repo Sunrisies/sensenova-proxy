@@ -18,6 +18,7 @@ export async function GET(
     api_key: endpoint.api_key.slice(0, 6) + '***' + endpoint.api_key.slice(-4),
     priority: endpoint.priority,
     weight: endpoint.weight,
+    endpoint_group: endpoint.endpoint_group,
     enabled: endpoint.enabled,
     healthy: endpoint.healthy,
     error_count: endpoint.error_count,

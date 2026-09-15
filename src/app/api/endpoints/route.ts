@@ -12,6 +12,7 @@ export async function GET() {
     api_key: e.api_key.slice(0, 6) + '***' + e.api_key.slice(-4),
     priority: e.priority,
     weight: e.weight,
+    endpoint_group: e.endpoint_group,
     enabled: e.enabled,
     healthy: e.healthy,
     error_count: e.error_count,

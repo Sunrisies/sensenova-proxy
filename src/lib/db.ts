@@ -154,6 +154,20 @@ async function initializePool(): Promise<void> {
   `);
 
   await p.query(`
+    CREATE TABLE IF NOT EXISTS proxy_keys (
+      id VARCHAR(36) PRIMARY KEY,
+      name VARCHAR(100) NOT NULL UNIQUE,
+      key_hash CHAR(64) NOT NULL UNIQUE,
+      allowed_models TEXT,
+      endpoint_group VARCHAR(100) NOT NULL DEFAULT 'default',
+      max_concurrent INT NOT NULL DEFAULT 1,
+      enabled TINYINT(1) NOT NULL DEFAULT 1,
+      created_at INT NOT NULL,
+      updated_at INT NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await p.query(`
     CREATE TABLE IF NOT EXISTS login_attempts (
       login_key VARCHAR(512) PRIMARY KEY,
       failures INT NOT NULL DEFAULT 0,
@@ -162,6 +176,7 @@ async function initializePool(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
+  await addColumnSafe(p, "ALTER TABLE endpoints ADD COLUMN endpoint_group VARCHAR(100) NOT NULL DEFAULT 'default' AFTER weight");
   await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN token_estimated TINYINT(1) DEFAULT 0 AFTER total_tokens');
   await createIndexSafe(p, 'CREATE INDEX idx_request_logs_created_at ON request_logs(created_at DESC)');
   await createIndexSafe(p, 'CREATE INDEX idx_endpoints_priority ON endpoints(priority ASC, weight DESC)');
@@ -176,6 +191,7 @@ export interface Endpoint {
   api_key: string;
   priority: number;
   weight: number;
+  endpoint_group: string;
   enabled: boolean;
   healthy: boolean;
   last_check: number;
@@ -195,6 +211,7 @@ export interface CreateEndpointInput {
   api_key: string;
   priority?: number;
   weight?: number;
+  endpoint_group?: string;
   enabled?: boolean;
   sensenova_account_id?: string;
   console_access_token?: string;
@@ -208,11 +225,63 @@ export interface UpdateEndpointInput {
   api_key?: string;
   priority?: number;
   weight?: number;
+  endpoint_group?: string;
   enabled?: boolean;
   sensenova_account_id?: string;
   console_access_token?: string;
   console_access_expires_at?: number;
   console_refresh_token?: string;
+}
+
+export interface ProxyKey {
+  id: string;
+  name: string;
+  key_hash: string;
+  allowed_models: string[];
+  endpoint_group: string;
+  max_concurrent: number;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateProxyKeyInput {
+  name: string;
+  key_hash: string;
+  allowed_models?: string[];
+  endpoint_group?: string;
+  max_concurrent?: number;
+}
+
+function normalizeProxyKey(row: Record<string, unknown>): ProxyKey {
+  let allowed_models: string[] = [];
+  try { allowed_models = row.allowed_models ? JSON.parse(String(row.allowed_models)) : []; } catch { /* legacy malformed configuration */ }
+  return { id: String(row.id), name: String(row.name), key_hash: String(row.key_hash), allowed_models, endpoint_group: String(row.endpoint_group || 'default'), max_concurrent: Number(row.max_concurrent), enabled: Boolean(row.enabled), created_at: Number(row.created_at), updated_at: Number(row.updated_at) };
+}
+
+export async function getProxyKeys(): Promise<ProxyKey[]> {
+  const [rows] = await poolQuery('SELECT * FROM proxy_keys ORDER BY created_at DESC');
+  return (rows as Record<string, unknown>[]).map(normalizeProxyKey);
+}
+
+export async function getProxyKeyByHash(keyHash: string): Promise<ProxyKey | null> {
+  const [rows] = await poolQuery('SELECT * FROM proxy_keys WHERE key_hash = ? AND enabled = 1', [keyHash]);
+  const row = (rows as Record<string, unknown>[])[0];
+  return row ? normalizeProxyKey(row) : null;
+}
+
+export async function createProxyKey(input: CreateProxyKeyInput): Promise<ProxyKey> {
+  const db = (await getPool()) as any;
+  const id = uuidv4(); const now = Math.floor(Date.now() / 1000);
+  await db.query('INSERT INTO proxy_keys (id, name, key_hash, allowed_models, endpoint_group, max_concurrent, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [id, input.name, input.key_hash, JSON.stringify(input.allowed_models ?? []), input.endpoint_group?.trim() || 'default', Math.max(1, input.max_concurrent ?? 1), now, now]);
+  const [rows] = await db.query('SELECT * FROM proxy_keys WHERE id = ?', [id]);
+  return normalizeProxyKey(rows[0]);
+}
+
+export async function deleteProxyKey(id: string): Promise<boolean> {
+  const db = (await getPool()) as any;
+  const [result] = await db.query('DELETE FROM proxy_keys WHERE id = ?', [id]);
+  return result.affectedRows > 0;
 }
 
 export interface RequestLog {
@@ -269,6 +338,7 @@ function normalizeEndpoint(row: Record<string, unknown>): Endpoint {
     api_key: String(row.api_key),
     priority: Number(row.priority),
     weight: Number(row.weight),
+    endpoint_group: row.endpoint_group ? String(row.endpoint_group) : 'default',
     enabled: Boolean(row.enabled),
     healthy: Boolean(row.healthy),
     last_check: Number(row.last_check),
@@ -297,16 +367,20 @@ export async function getEnabledEndpoints(): Promise<Endpoint[]> {
   return (rows as Record<string, unknown>[]).map(normalizeEndpoint);
 }
 
-export async function getAvailableEndpoints(): Promise<Endpoint[]> {
+export async function getAvailableEndpoints(endpointGroup?: string): Promise<Endpoint[]> {
+  const groupCondition = endpointGroup ? ' AND endpoint_group = ?' : '';
   const [rows] = await poolQuery(
-    'SELECT * FROM endpoints WHERE enabled = 1 AND (cooldown_until IS NULL OR cooldown_until <= UNIX_TIMESTAMP()) ORDER BY priority ASC, weight DESC'
+    `SELECT * FROM endpoints WHERE enabled = 1 AND (cooldown_until IS NULL OR cooldown_until <= UNIX_TIMESTAMP())${groupCondition} ORDER BY priority ASC, weight DESC`,
+    endpointGroup ? [endpointGroup] : [],
   );
   return (rows as Record<string, unknown>[]).map(normalizeEndpoint);
 }
 
-export async function getHealthyEndpoints(): Promise<Endpoint[]> {
+export async function getHealthyEndpoints(endpointGroup?: string): Promise<Endpoint[]> {
+  const groupCondition = endpointGroup ? ' AND endpoint_group = ?' : '';
   const [rows] = await poolQuery(
-    'SELECT * FROM endpoints WHERE enabled = 1 AND healthy = 1 AND (cooldown_until IS NULL OR cooldown_until <= UNIX_TIMESTAMP()) ORDER BY priority ASC, weight DESC'
+    `SELECT * FROM endpoints WHERE enabled = 1 AND healthy = 1 AND (cooldown_until IS NULL OR cooldown_until <= UNIX_TIMESTAMP())${groupCondition} ORDER BY priority ASC, weight DESC`,
+    endpointGroup ? [endpointGroup] : [],
   );
   return (rows as Record<string, unknown>[]).map(normalizeEndpoint);
 }
@@ -326,8 +400,8 @@ export async function createEndpoint(input: CreateEndpointInput): Promise<Endpoi
   const now = Math.floor(Date.now() / 1000);
 
   await db.query(
-    `INSERT INTO endpoints (id, name, url, api_key, priority, weight, enabled, healthy, sensenova_account_id, console_access_token, console_access_expires_at, console_refresh_token, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO endpoints (id, name, url, api_key, priority, weight, endpoint_group, enabled, healthy, sensenova_account_id, console_access_token, console_access_expires_at, console_refresh_token, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.name,
@@ -335,6 +409,7 @@ export async function createEndpoint(input: CreateEndpointInput): Promise<Endpoi
       input.api_key,
       input.priority ?? 0,
       input.weight ?? 1,
+      input.endpoint_group?.trim() || 'default',
       input.enabled ? 1 : 0,
       input.sensenova_account_id ?? null,
       input.console_access_token ?? null,
@@ -362,6 +437,7 @@ export async function updateEndpoint(id: string, input: UpdateEndpointInput): Pr
   if (input.api_key !== undefined) { updates.push('api_key = ?'); values.push(input.api_key); }
   if (input.priority !== undefined) { updates.push('priority = ?'); values.push(input.priority); }
   if (input.weight !== undefined) { updates.push('weight = ?'); values.push(input.weight); }
+  if (input.endpoint_group !== undefined) { updates.push('endpoint_group = ?'); values.push(input.endpoint_group.trim() || 'default'); }
   if (input.enabled !== undefined) { updates.push('enabled = ?'); values.push(input.enabled ? 1 : 0); }
   if (input.sensenova_account_id !== undefined) { updates.push('sensenova_account_id = ?'); values.push(input.sensenova_account_id || null); }
   if (input.console_access_token !== undefined) { updates.push('console_access_token = ?'); values.push(input.console_access_token || null); }

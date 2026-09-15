@@ -30,6 +30,7 @@ interface Endpoint {
   api_key: string;
   priority: number;
   weight: number;
+  endpoint_group: string;
   enabled: boolean;
   healthy: boolean;
   error_count: number;
@@ -77,6 +78,7 @@ export default function EndpointsPage() {
     api_key: "",
     priority: 0,
     weight: 1,
+    endpoint_group: "default",
   });
   const [authorizationForm, setAuthorizationForm] = useState({
     sensenova_account_id: "",
@@ -272,7 +274,7 @@ export default function EndpointsPage() {
       toast.success(editingId ? "端点已更新" : "端点已添加");
       setDialogOpen(false);
       setEditingId(null);
-      setForm({ name: "", url: "", api_key: "", priority: 0, weight: 1 });
+      setForm({ name: "", url: "", api_key: "", priority: 0, weight: 1, endpoint_group: "default" });
       fetchEndpoints();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "未知错误");
@@ -301,13 +303,14 @@ export default function EndpointsPage() {
       api_key: "",
       priority: ep.priority,
       weight: ep.weight,
+      endpoint_group: ep.endpoint_group || "default",
     });
     setDialogOpen(true);
   }
 
   function openCreate() {
     setEditingId(null);
-    setForm({ name: "", url: "", api_key: "", priority: 0, weight: 1 });
+    setForm({ name: "", url: "", api_key: "", priority: 0, weight: 1, endpoint_group: "default" });
     setDialogOpen(true);
   }
 
@@ -388,6 +391,11 @@ export default function EndpointsPage() {
                   onChange={(e) => setForm({ ...form, api_key: e.target.value })}
                   placeholder={editingId ? "留空则不更新" : "sk-xxx"}
                 />
+              </div>
+              <div className="space-y-2">
+                <Label>端点组</Label>
+                <Input value={form.endpoint_group} onChange={(e) => setForm({ ...form, endpoint_group: e.target.value })} placeholder="default" />
+                <p className="text-[11px] text-muted-foreground">代理 Key 仅在相同端点组内选择端点和故障切换。</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">

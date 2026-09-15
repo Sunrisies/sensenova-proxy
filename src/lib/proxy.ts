@@ -1,6 +1,7 @@
-import { getHealthyEndpoints, getAvailableEndpoints, markUnhealthy, markHealthy, markRateLimited, addLog, addRequestAttempt, updateRequestAttempt } from './db';
+import { getHealthyEndpoints, getAvailableEndpoints, getProxyKeyByHash, markUnhealthy, markHealthy, markRateLimited, addLog, addRequestAttempt, updateRequestAttempt } from './db';
 import { v4 as uuidv4 } from 'uuid';
 import { estimatePromptTokens, usageWithFallback } from './tokens';
+import { acquireConcurrency, hashProxyKey } from './proxy-access';
 
 const REQUEST_TIMEOUT = Number(process.env.PROXY_REQUEST_TIMEOUT_MS || 120000);
 function debugLog(msg: string) {
@@ -73,16 +74,29 @@ export async function proxyRequest(
   }
   const promptTextTokens = estimatePromptTokens(parsedBody?.messages);
 
-  const healthyEndpoints = await getHealthyEndpoints();
-  const availableEndpoints = await getAvailableEndpoints();
+  const bearer = request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!bearer) return Response.json({ error: 'Missing proxy API key' }, { status: 401 });
+  const virtualKey = await getProxyKeyByHash(hashProxyKey(bearer));
+  const legacyKeys = process.env.PROXY_API_KEYS?.split(',').map(value => value.trim()).filter(Boolean) ?? [];
+  if (!virtualKey && !legacyKeys.includes(bearer)) return Response.json({ error: 'Invalid proxy API key' }, { status: 401 });
+  if (virtualKey && requestInfo.model && virtualKey.allowed_models.length > 0 && !virtualKey.allowed_models.includes(requestInfo.model)) {
+    return Response.json({ error: `Model not allowed for this proxy key: ${requestInfo.model}` }, { status: 403 });
+  }
+  const releaseConcurrency = virtualKey && requestInfo.model ? acquireConcurrency(virtualKey.id, requestInfo.model, virtualKey.max_concurrent) : undefined;
+  if (virtualKey && requestInfo.model && !releaseConcurrency) {
+    return Response.json({ error: `Concurrency limit reached for ${requestInfo.model}`, max_concurrent: virtualKey.max_concurrent }, { status: 429, headers: { 'Retry-After': '5' } });
+  }
+
+  const healthyEndpoints = await getHealthyEndpoints(virtualKey?.endpoint_group);
+  const availableEndpoints = await getAvailableEndpoints(virtualKey?.endpoint_group);
   const endpoints = healthyEndpoints.length > 0 ? healthyEndpoints : availableEndpoints;
   debugLog(`[PROXY] method=${method} path=${path} healthyEndpoints=${healthyEndpoints.length} availableEndpoints=${availableEndpoints.length}`);
 
   if (endpoints.length === 0) {
+    releaseConcurrency?.();
     debugLog('[PROXY] No enabled endpoints configured');
-    return new Response(JSON.stringify({ error: 'No enabled endpoints available' }), {
-      status: 503,
-      headers: { 'Content-Type': 'application/json' },
+    return new Response(JSON.stringify({ error: virtualKey ? `No endpoints available in group: ${virtualKey.endpoint_group}` : 'No enabled endpoints available' }), {
+      status: 503, headers: { 'Content-Type': 'application/json' },
     });
   }
 
@@ -121,7 +135,7 @@ export async function proxyRequest(
         if (!seen.has(m.id)) seen.set(m.id, m);
       }
     }
-    const models = [...seen.values()];
+    const models = [...seen.values()].filter(model => !virtualKey || virtualKey.allowed_models.length === 0 || virtualKey.allowed_models.includes(model.id));
     return new Response(JSON.stringify({ data: models, object: 'list' }), {
       status: 200,
       headers: {
@@ -236,6 +250,7 @@ export async function proxyRequest(
         async function finalize(error?: string, status = error ? 502 : baseLog.status) {
           if (finalized) return;
           finalized = true;
+          releaseConcurrency?.();
           const usage = usageWithFallback({ prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: totalTokens }, promptTextTokens, outputText);
           const completed = {
             ...baseLog,
@@ -324,6 +339,7 @@ export async function proxyRequest(
       const logEntry = { ...baseLog, ...usage };
       await addLog(logEntry);
       emitLog({ ...logEntry, created_at: Math.floor(Date.now() / 1000) });
+      releaseConcurrency?.();
 
       return new Response(response.body, {
         status: response.status,
@@ -342,6 +358,7 @@ export async function proxyRequest(
     }
   }
 
+  releaseConcurrency?.();
   const duration = Date.now() - startTime;
   const logEntry = {
     endpoint_id: endpoints[0].id,

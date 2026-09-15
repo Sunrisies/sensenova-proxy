@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CheckCircle2, FileText, Loader2, Play, Radio, Trash2, XCircle, Zap } from "lucide-react";
 import { toast } from "sonner";
+import { debug } from "node:util";
 
 interface Endpoint { id: string; name: string; url: string; priority: number; weight: number; enabled: boolean; healthy: boolean; api_key?: string; }
 interface Model { id: string; name?: string; }
@@ -41,7 +42,7 @@ export default function TestPage() {
         const res = await fetch(`/api/endpoints/${selectedEndpoint}/models`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "获取模型失败");
-        const list = data.data ?? data;
+        const list = data.data.filter((model:Model) => model.id !== "sensenova-6.7-flash-lite") ?? data.filter((model:Model) => model.id !== "sensenova-6.7-flash-lite");
         if (active) { setModels(list); setSelectedModel(list[0]?.id ?? ""); }
       } catch (error) {
         if (active) toast.error(error instanceof Error ? error.message : "获取模型失败");
