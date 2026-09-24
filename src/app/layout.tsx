@@ -1,5 +1,4 @@
-import type { Metadata } from "next";
-import Link from "next/link";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { AdminNav } from "./nav";
@@ -7,7 +6,11 @@ import { AdminNav } from "./nav";
 export const metadata: Metadata = {
   title: "SenseNova Proxy",
   description: "SenseNova 自动故障转移代理",
-  viewport: { width: "device-width", initialScale: 1 },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({

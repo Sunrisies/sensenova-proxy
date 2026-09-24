@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -27,7 +27,7 @@ interface StatsResponse {
   };
 }
 
-const ranges = [
+const ranges: [string, string][] = [
   ["24h", "最近 24 小时"],
   ["today", "今天"],
   ["7d", "最近 7 天"],
@@ -46,6 +46,13 @@ function compactNumber(value: number): string {
   return number(value);
 }
 
+const TONE_CLASSES: Record<"slate" | "emerald" | "rose" | "indigo", { text: string; dot: string }> = {
+  slate: { text: "text-slate-900", dot: "bg-slate-400" },
+  emerald: { text: "text-emerald-600", dot: "bg-emerald-500" },
+  rose: { text: "text-rose-600", dot: "bg-rose-500" },
+  indigo: { text: "text-indigo-600", dot: "bg-indigo-500" },
+};
+
 export default function StatsPage() {
   const [range, setRange] = useState("24h");
   const [endpointId, setEndpointId] = useState("all");
@@ -54,6 +61,18 @@ export default function StatsPage() {
   const [data, setData] = useState<StatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const formatNumber = (value: number) => compact ? compactNumber(value) : number(value);
+
+  const rangeItems = useMemo(() => Object.fromEntries(ranges), []);
+  const endpointItems = useMemo(() => {
+    const items: Record<string, string> = { all: "全部端点 Key" };
+    (data?.endpoints ?? []).forEach((e) => { items[e.id] = `${e.name} · ${e.api_key}`; });
+    return items;
+  }, [data?.endpoints]);
+  const modelItems = useMemo(() => {
+    const items: Record<string, string> = { all: "全部模型" };
+    (data?.models ?? []).forEach((m) => { items[m] = m; });
+    return items;
+  }, [data?.models]);
 
   useEffect(() => {
     const query = new URLSearchParams({ range });
@@ -82,19 +101,25 @@ export default function StatsPage() {
 
       <Card>
         <CardContent className="flex flex-col gap-3 p-4 sm:flex-row">
-          <Select value={range} onValueChange={(value) => setRange(value ?? "24h")}>
-            <SelectTrigger className="w-full sm:w-[180px]"><SelectValue placeholder="时间范围" /></SelectTrigger>
+          <Select items={rangeItems} value={range} onValueChange={(value) => setRange(value ?? "24h")}>
+            <SelectTrigger className="w-full sm:w-[180px]">
+              <SelectValue placeholder="时间范围">{(value: string) => rangeItems[value] ?? "时间范围"}</SelectValue>
+            </SelectTrigger>
             <SelectContent>{ranges.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
           </Select>
-          <Select value={endpointId} onValueChange={(value) => setEndpointId(value ?? "all")}>
-            <SelectTrigger className="w-full sm:w-[260px]"><SelectValue placeholder="按 Key 筛选" /></SelectTrigger>
+          <Select items={endpointItems} value={endpointId} onValueChange={(value) => setEndpointId(value ?? "all")}>
+            <SelectTrigger className="w-full sm:w-[260px]">
+              <SelectValue placeholder="按 Key 筛选">{(value: string) => endpointItems[value] ?? "按 Key 筛选"}</SelectValue>
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部端点 Key</SelectItem>
               {data?.endpoints.map((endpoint) => <SelectItem key={endpoint.id} value={endpoint.id}>{endpoint.name} · {endpoint.api_key}</SelectItem>)}
             </SelectContent>
           </Select>
-          <Select value={model} onValueChange={(value) => setModel(value ?? "all")}>
-            <SelectTrigger className="w-full sm:w-[260px]"><SelectValue placeholder="按模型筛选" /></SelectTrigger>
+          <Select items={modelItems} value={model} onValueChange={(value) => setModel(value ?? "all")}>
+            <SelectTrigger className="w-full sm:w-[260px]">
+              <SelectValue placeholder="按模型筛选">{(value: string) => modelItems[value] ?? "按模型筛选"}</SelectValue>
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部模型</SelectItem>
               {data?.models.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
@@ -113,15 +138,42 @@ export default function StatsPage() {
       {loading && <div className="py-10 text-center text-sm text-muted-foreground">加载统计数据...</div>}
       {!loading && data && (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
-            {[
-              ["总调用", data.stats.total_requests, "text-slate-900"],
-              ["成功", data.stats.successful_requests, "text-emerald-600"],
-              ["失败", data.stats.failed_requests, "text-rose-600"],
-              ["总 Token", data.stats.total_tokens, "text-sky-600"],
-              ["输入 Token", data.stats.prompt_tokens, "text-slate-700"],
-              ["输出 Token", data.stats.completion_tokens, "text-slate-700"],
-            ].map(([label, value, color]) => <Card key={String(label)}><CardContent className="p-4"><div className="text-xs text-muted-foreground">{label}</div><div className={`mt-2 text-xl font-semibold ${color}`}>{typeof label === "string" && label.includes("Token") ? displayToken(value as number | null, compact) : formatNumber(Number(value))}</div></CardContent></Card>)}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+            {(
+              [
+                { label: "总调用", value: data.stats.total_requests, tone: "slate", isToken: false },
+                { label: "成功", value: data.stats.successful_requests, tone: "emerald", isToken: false },
+                { label: "失败", value: data.stats.failed_requests, tone: "rose", isToken: false, zeroIsSuccess: true },
+                { label: "总 Token", value: data.stats.total_tokens, tone: "indigo", isToken: true },
+                { label: "输入 Token", value: data.stats.prompt_tokens, tone: "slate", isToken: true },
+                { label: "输出 Token", value: data.stats.completion_tokens, tone: "slate", isToken: true },
+              ] as {
+                label: string;
+                value: number | null;
+                tone: "slate" | "emerald" | "rose" | "indigo";
+                isToken: boolean;
+                zeroIsSuccess?: boolean;
+              }[]
+            ).map((m) => {
+              const value = m.value as number | null;
+              const text = m.isToken ? displayToken(value, compact) : formatNumber(Number(value));
+              const effectiveTone: "slate" | "emerald" | "rose" | "indigo" =
+                m.zeroIsSuccess && Number(value) === 0 ? "slate" : m.tone;
+              const toneClass = TONE_CLASSES[effectiveTone];
+              return (
+                <Card key={m.label} className="overflow-hidden">
+                  <CardContent className="flex flex-col gap-1.5 p-5">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>{m.label}</span>
+                      <span className={`h-1.5 w-1.5 rounded-full ${toneClass.dot}`} />
+                    </div>
+                    <div className={`text-3xl font-semibold tracking-tight tabular-nums ${toneClass.text}`}>
+                      {text}
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
 
           <Card>

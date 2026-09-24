@@ -79,18 +79,21 @@ function getBarColor(percent: number): string {
 function QuotaWindow({ label, window }: { label: string; window: PoolWindow }) {
   const percent = window.limit > 0 ? Math.max(0, Math.min(100, (window.remaining / window.limit) * 100)) : 0;
   return (
-    <div>
-      <div className="mb-0.5 flex items-center justify-between text-[11px]">
-        <span className="text-slate-500">{label}</span>
-        <span className="shrink-0 tabular-nums font-medium text-slate-800">
-          {formatTokens(window.remaining)} <span className="text-slate-400">/ {formatTokens(window.limit)}</span>
-          <span className={`ml-1.5 font-semibold ${percent > 50 ? "text-emerald-600" : percent > 20 ? "text-amber-600" : "text-rose-600"}`}>{percent.toFixed(1)}%</span>
+    <div className="min-w-0">
+      <div className="mb-1 flex items-baseline justify-between gap-1 text-[11px]">
+        <span className="shrink-0 font-medium text-slate-500">{label}</span>
+        <span className="min-w-0 shrink truncate tabular-nums">
+          <span className="text-xs font-semibold text-slate-900">{formatTokens(window.remaining)}</span>
+          <span className="text-slate-400"> / {formatTokens(window.limit)}</span>
+          <span className={`ml-1 text-[11px] font-semibold ${percent > 50 ? "text-emerald-600" : percent > 20 ? "text-amber-600" : "text-rose-600"}`}>
+            {percent.toFixed(0)}%
+          </span>
         </span>
       </div>
-      <div className="h-1 overflow-hidden rounded-full bg-slate-200/70">
+      <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
         <div className={`h-full rounded-full transition-all ${getBarColor(percent)}`} style={{ width: `${percent}%` }} />
       </div>
-      <div className="mt-0.5 text-[10px] leading-tight text-slate-400">{formatReset(window.reset_at)}</div>
+      <div className="mt-1 text-[10px] leading-tight text-slate-400">{formatReset(window.reset_at)}</div>
     </div>
   );
 }
@@ -145,44 +148,41 @@ export default function Dashboard() {
   const usageById = new Map(usage.map((item) => [item.id, item]));
 
   return (
-    <div className="min-h-[calc(100vh-7rem)] space-y-4 rounded-2xl bg-slate-50 p-4 text-slate-900 shadow-sm">
-      {/* 头部：标题 + 内联统计 + 刷新信息，一行搞定 */}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-slate-200 pb-3">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900">端点配额总览</h1>
-          <span className="text-[11px] uppercase tracking-[0.18em] text-sky-500">SenseNova Proxy</span>
+    <div className="flex min-h-[calc(100vh-6.5rem)] flex-col gap-4 pb-6">
+      {/* 头部：紧凑单行 */}
+      <div className="flex shrink-0 items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 text-white shadow-md shadow-indigo-200">
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 12h4l3-9 4 18 3-9h4" />
+            </svg>
+          </span>
+          <div>
+            <h1 className="text-lg font-semibold leading-tight tracking-tight text-foreground">端点配额总览</h1>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-indigo-500">SenseNova Proxy</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2 text-xs">
-          <span className="rounded-full bg-white px-2.5 py-1 tabular-nums text-slate-600 ring-1 ring-slate-200">
-            总端点 <strong className="font-semibold text-slate-900">{status.total}</strong>
-          </span>
-          <span className="rounded-full bg-emerald-50 px-2.5 py-1 tabular-nums text-emerald-700 ring-1 ring-emerald-200">
-            健康 <strong className="font-semibold">{status.healthy}</strong>
-          </span>
-          <span className="rounded-full bg-rose-50 px-2.5 py-1 tabular-nums text-rose-700 ring-1 ring-rose-200">
-            不健康 <strong className="font-semibold">{status.unhealthy}</strong>
-          </span>
-        </div>
-        <div className="ml-auto text-[11px] text-slate-400">
-          每 60 秒自动刷新{lastUpdated && <span className="ml-1.5">· {lastUpdated.toLocaleTimeString("zh-CN")}</span>}
+        <div className="text-[11px] text-slate-400">
+          每 60 秒刷新{lastUpdated && <span className="ml-1">· {lastUpdated.toLocaleTimeString("zh-CN")}</span>}
         </div>
       </div>
 
-      <ModelTrendCharts />
+      <ModelTrendCharts compact />
 
       {status.endpoints.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-300 py-16 text-center text-slate-500">暂无端点，请先添加端点</div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-2">
           {status.endpoints.map((endpoint) => {
             const endpointUsage = usageById.get(endpoint.id);
             const pools = endpointUsage?.pools ?? [];
             const modelCount = new Set(pools.flatMap((pool) => pool.model_ids)).size;
             return (
-              <Card key={endpoint.id} className="overflow-hidden border-slate-200 bg-white py-0 text-slate-900 shadow-sm">
-                <CardContent className="p-3">
+              <Card key={endpoint.id} className="group overflow-hidden border-slate-200 bg-white py-0 text-slate-900 shadow-sm transition-shadow hover:shadow-md">
+                <div className={endpoint.healthy ? "h-1 w-full bg-gradient-to-r from-emerald-400 via-emerald-500 to-teal-400" : "h-1 w-full bg-gradient-to-r from-rose-400 via-rose-500 to-pink-400"} />
+                <CardContent className="flex flex-col p-3">
                   {/* 端点头部 */}
-                  <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                  <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 pb-2">
                     <div className="flex min-w-0 items-center gap-2">
                       <span className={`h-2 w-2 shrink-0 rounded-full ${endpoint.healthy ? "bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.15)]" : "bg-rose-400 shadow-[0_0_0_3px_rgba(251,113,133,0.15)]"}`} />
                       <div className="min-w-0">
@@ -200,39 +200,42 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* 配额标题行 */}
-                  <div className="mt-2.5 flex items-center justify-between text-[11px]">
-                    <span className="font-medium text-slate-700">
-                      积分池{endpointUsage?.plan && <span className="ml-1.5 font-normal text-slate-400">{endpointUsage.plan}</span>}
+                  {/* 积分池标题行 - 精简 */}
+                  <div className="mb-1.5 flex shrink-0 items-center justify-between text-[11px]">
+                    <span className="font-medium text-slate-600">
+                      积分池{endpointUsage?.plan && <span className="ml-1 font-normal text-slate-400">{endpointUsage.plan}</span>}
                     </span>
                     {endpointUsage?.authorization !== "valid" && <span className="text-slate-400">需要配额授权</span>}
                   </div>
 
-                  {endpointUsage?.authorization === "invalid" && <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] text-rose-700">{endpointUsage.error ?? "请在端点管理中重新授权"}</div>}
-                  {endpointUsage?.authorization === "not_configured" && <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-500">请在端点管理中配置该账号的配额授权</div>}
-                  {endpointUsage?.authorization === "valid" && (
-                    <div className="mt-2 space-y-2">
-                      {pools.map((pool) => (
-                        <div key={pool.id} className="rounded-md bg-slate-50 px-2.5 py-2 ring-1 ring-slate-100">
-                          <div className="mb-1.5 flex items-center justify-between text-[11px]">
-                            <span className="font-medium text-slate-800">{pool.name}</span>
-                            <span className="text-slate-400">{pool.pool_type === "dedicated" ? "专属" : "通用"}</span>
+                  {/* 积分池内容 */}
+                  <div className="flex-1">
+                    {endpointUsage?.authorization === "invalid" && <div className="rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] text-rose-700">{endpointUsage.error ?? "请在端点管理中重新授权"}</div>}
+                    {endpointUsage?.authorization === "not_configured" && <div className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-500">请在端点管理中配置该账号的配额授权</div>}
+                    {endpointUsage?.authorization === "valid" && (
+                      <div className="space-y-1.5">
+                        {pools.map((pool) => (
+                          <div key={pool.id} className="rounded-md bg-slate-50 px-2.5 py-1.5 ring-1 ring-slate-100">
+                            <div className="mb-1 flex items-center justify-between text-[11px]">
+                              <span className="font-medium text-slate-800">{pool.name}</span>
+                              <span className="text-slate-400">{pool.pool_type === "dedicated" ? "专属" : "通用"}</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <QuotaWindow label="5小时" window={pool.window_5h} />
+                              <QuotaWindow label="7天" window={pool.window_7d} />
+                            </div>
+                            <div className="mt-1 truncate font-mono text-[10px] text-slate-400" title={pool.model_ids.join("、")}>
+                              {pool.model_ids.join(" · ")}
+                            </div>
                           </div>
-                          <div className="space-y-1.5">
-                            <QuotaWindow label="5小时" window={pool.window_5h} />
-                            <QuotaWindow label="7天" window={pool.window_7d} />
-                          </div>
-                          <div className="mt-1.5 truncate font-mono text-[10px] text-slate-400" title={pool.model_ids.join("、")}>
-                            {pool.model_ids.join(" · ")}
-                          </div>
-                        </div>
-                      ))}
-                      {pools.length === 0 && <div className="text-[11px] text-slate-400">该端点暂无积分池数据</div>}
-                    </div>
-                  )}
+                        ))}
+                        {pools.length === 0 && <div className="text-[11px] text-slate-400">该端点暂无积分池数据</div>}
+                      </div>
+                    )}
+                  </div>
 
                   {/* 底部信息 */}
-                  <div className="mt-2.5 flex items-center justify-between border-t border-slate-100 pt-2 text-[10px] text-slate-400">
+                  <div className="mt-1.5 flex shrink-0 items-center justify-between border-t border-slate-100 pt-1.5 text-[10px] text-slate-400">
                     <span>错误 {endpoint.error_count}</span>
                     <span>{modelCount} 个模型</span>
                     <span>{endpoint.enabled ? "已启用" : "已禁用"}</span>

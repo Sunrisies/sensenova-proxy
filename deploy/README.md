@@ -20,11 +20,12 @@ cp deploy/server.local.env.example deploy/server.local.env
 
 ```env
 DEPLOY_HOST=47.111.168.59
+DEPLOY_SSH_PORT=22
 DEPLOY_USER=root
 DEPLOY_PATH=/home/www
 ```
 
-该文件已被 Git 忽略，不会进入版本库，不要手工提交。
+该文件已被 Git 忽略，不会进入版本库，不要手工提交。`DEPLOY_SSH_PORT` 可配置 SSH 端口，未填写时默认使用 `22`。脚本会对 SSH 连接设置 15 秒连接超时，并启用连接保活。
 
 ### 2. 配置服务器应用环境变量
 

@@ -3,7 +3,7 @@ import { isAdminRequest } from '@/lib/auth';
 
 const publicPaths = ['/login', '/api/auth/login', '/api/auth/logout'];
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-pathname', pathname);

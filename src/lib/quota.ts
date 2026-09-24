@@ -147,6 +147,18 @@ export function encryptQuotaInput(input: { sensenova_account_id?: string; consol
   };
 }
 
+export async function getEndpointPlanModelIds(endpoint: Endpoint): Promise<string[] | null> {
+  const quota = await getEndpointQuota(endpoint);
+  if (quota.authorization !== 'valid') return null;
+  const modelIds = new Set<string>();
+  for (const pool of quota.pools) {
+    for (const modelId of pool.model_ids) {
+      if (modelId) modelIds.add(modelId);
+    }
+  }
+  return modelIds.size > 0 ? [...modelIds] : null;
+}
+
 export function getQuotaAuthorization(endpoint: Endpoint) {
   if (!authorizationConfigured(endpoint)) return { quota_authorization: 'not_configured' as const };
   return { quota_authorization: 'valid' as const, quota_expires_at: endpoint.console_access_expires_at };

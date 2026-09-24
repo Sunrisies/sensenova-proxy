@@ -60,3 +60,10 @@ next-env.d.ts
 
 # local deployment target
 /deploy/server.local.env
+
+# playwright debug artifacts
+.playwright-cli/
+/output/
+
+# local dev server logs
+dev-*.log

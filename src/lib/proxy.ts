@@ -2,6 +2,7 @@ import { getHealthyEndpoints, getAvailableEndpoints, getProxyKeyByHash, markUnhe
 import { v4 as uuidv4 } from 'uuid';
 import { estimatePromptTokens, usageWithFallback } from './tokens';
 import { acquireConcurrency, hashProxyKey } from './proxy-access';
+import { getEndpointPlanModelIds } from './quota';
 
 const REQUEST_TIMEOUT = Number(process.env.PROXY_REQUEST_TIMEOUT_MS || 120000);
 function debugLog(msg: string) {
@@ -89,8 +90,25 @@ export async function proxyRequest(
 
   const healthyEndpoints = await getHealthyEndpoints(virtualKey?.endpoint_group);
   const availableEndpoints = await getAvailableEndpoints(virtualKey?.endpoint_group);
-  const endpoints = healthyEndpoints.length > 0 ? healthyEndpoints : availableEndpoints;
-  debugLog(`[PROXY] method=${method} path=${path} healthyEndpoints=${healthyEndpoints.length} availableEndpoints=${availableEndpoints.length}`);
+  const candidateEndpoints = healthyEndpoints.length > 0 ? healthyEndpoints : availableEndpoints;
+  const planModelIds = requestInfo.model
+    ? await Promise.all(candidateEndpoints.map(async endpoint => ({ endpoint, modelIds: await getEndpointPlanModelIds(endpoint) })))
+    : candidateEndpoints.map(endpoint => ({ endpoint, modelIds: null }));
+  const endpoints = requestInfo.model
+    ? planModelIds.filter(({ modelIds }) => !modelIds || modelIds.includes(requestInfo.model!)).map(({ endpoint }) => endpoint)
+    : candidateEndpoints;
+  debugLog(`[PROXY] method=${method} path=${path} healthyEndpoints=${healthyEndpoints.length} availableEndpoints=${availableEndpoints.length} model=${requestInfo.model ?? 'none'} routedEndpoints=${endpoints.length}`);
+
+  if (requestInfo.model && endpoints.length === 0) {
+    releaseConcurrency?.();
+    return Response.json({
+      error: {
+        message: `The model '${requestInfo.model}' is not available in the current token plan`,
+        type: 'permission_denied_error',
+        code: '7',
+      },
+    }, { status: 403 });
+  }
 
   if (endpoints.length === 0) {
     releaseConcurrency?.();
@@ -135,7 +153,14 @@ export async function proxyRequest(
         if (!seen.has(m.id)) seen.set(m.id, m);
       }
     }
-    const models = [...seen.values()].filter(model => !virtualKey || virtualKey.allowed_models.length === 0 || virtualKey.allowed_models.includes(model.id));
+    const upstreamModels = [...seen.values()];
+    const planModelSets = await Promise.all(endpoints.map(getEndpointPlanModelIds));
+    const allowedByPlan = new Set(planModelSets.flatMap(modelIds => modelIds ?? []));
+    const hasPlanModelData = planModelSets.some(modelIds => modelIds !== null);
+    const models = upstreamModels.filter(model =>
+      (!hasPlanModelData || allowedByPlan.has(model.id)) &&
+      (!virtualKey || virtualKey.allowed_models.length === 0 || virtualKey.allowed_models.includes(model.id))
+    );
     return new Response(JSON.stringify({ data: models, object: 'list' }), {
       status: 200,
       headers: {
@@ -261,9 +286,19 @@ export async function proxyRequest(
             first_byte_ms: firstByteMs,
             ...usage,
           };
-          await addLog(completed);
+          try {
+            await addLog(completed);
+          } catch (logError) {
+            debugLog(`[PROXY] addLog failed: ${logError instanceof Error ? logError.message : String(logError)}`);
+          }
           emitLog({ ...completed, created_at: Math.floor(Date.now() / 1000) });
-          if (error) await updateRequestAttempt(attemptId, { status, success: false, error, duration: completed.duration });
+          if (error) {
+            try {
+              await updateRequestAttempt(attemptId, { status, success: false, error, duration: completed.duration });
+            } catch (attemptError) {
+              debugLog(`[PROXY] updateRequestAttempt failed: ${attemptError instanceof Error ? attemptError.message : String(attemptError)}`);
+            }
+          }
         }
 
         const reader = response.body.getReader();
@@ -337,7 +372,11 @@ export async function proxyRequest(
         }
       }
       const logEntry = { ...baseLog, ...usage };
-      await addLog(logEntry);
+      try {
+        await addLog(logEntry);
+      } catch (logError) {
+        debugLog(`[PROXY] addLog failed: ${logError instanceof Error ? logError.message : String(logError)}`);
+      }
       emitLog({ ...logEntry, created_at: Math.floor(Date.now() / 1000) });
       releaseConcurrency?.();
 
@@ -375,7 +414,11 @@ export async function proxyRequest(
     model: requestInfo.model,
     stream: requestInfo.stream,
   };
-  await addLog(logEntry);
+  try {
+    await addLog(logEntry);
+  } catch (logError) {
+    debugLog(`[PROXY] addLog failed: ${logError instanceof Error ? logError.message : String(logError)}`);
+  }
   emitLog({ ...logEntry, created_at: Math.floor(Date.now() / 1000) });
 
   return new Response(JSON.stringify({ error: 'All endpoints failed', details: lastError }), {

@@ -15,14 +15,20 @@ function formatBucket(value: number, range: Range) {
     : { month: "numeric", day: "numeric" });
 }
 
-function TrendChart({ title, data, models, metric, range }: {
-  title: string; data: Record<string, number | string>[]; models: string[]; metric: "requests" | "total_tokens"; range: Range;
+function formatAxisNumber(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value % 1_000 === 0 ? 0 : 1)}k`;
+  return String(value);
+}
+
+function TrendChart({ title, data, models, metric, range, compact }: {
+  title: string; data: Record<string, number | string>[]; models: string[]; metric: "requests" | "total_tokens"; range: Range; compact?: boolean;
 }) {
-  return <Card className="border-slate-200 bg-white py-0 shadow-sm"><CardContent className="p-3">
+  return <Card className="border-slate-200 bg-white py-0 shadow-sm"><CardContent className={compact ? "p-3" : "p-4"}>
     <div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold text-slate-800">{title}</h2><span className="text-[11px] text-slate-400">按模型</span></div>
-    <div className="h-44"><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+    <div className={compact ? "h-20" : "h-44"}><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
       <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#94a3b8" }} tickLine={false} axisLine={false} minTickGap={28} />
-      <YAxis tick={{ fontSize: 10, fill: "#94a3b8" }} tickLine={false} axisLine={false} allowDecimals={false} />
+      <YAxis tick={{ fontSize: 10, fill: "#94a3b8" }} tickLine={false} axisLine={false} allowDecimals={false} width={48} tickFormatter={(v: number) => formatAxisNumber(v)} />
       <Tooltip formatter={(value) => [Number(value).toLocaleString(), metric === "requests" ? "请求" : "Token"]} labelFormatter={(_, values) => formatBucket(Number(values[0]?.payload?.bucket), range)} />
       {models.map((model, index) => <Line key={model} type="monotone" dataKey={model} stroke={COLORS[index]} strokeWidth={2} dot={false} activeDot={{ r: 3 }} />)}
     </LineChart></ResponsiveContainer></div>
@@ -30,7 +36,7 @@ function TrendChart({ title, data, models, metric, range }: {
   </CardContent></Card>;
 }
 
-export function ModelTrendCharts() {
+export function ModelTrendCharts({ compact }: { compact?: boolean }) {
   const [range, setRange] = useState<Range>("24h");
   const [points, setPoints] = useState<Point[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,7 +58,7 @@ export function ModelTrendCharts() {
   }, [points, range]);
 
   const tokenData = data.map(row => { const next: Record<string, number | string> = { bucket: row.bucket, label: row.label }; for (const model of models) next[model] = row[`${model} tokens`] as number; return next; });
-  return <section className="border-t border-slate-200 pt-3"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-base font-semibold text-slate-900">模型趋势</h2><p className="text-[11px] text-slate-400">仅统计业务请求，不包含测试请求</p></div><div className="flex rounded-md border border-slate-200 bg-white p-0.5">{(["24h", "7d", "30d"] as Range[]).map(value => <Button key={value} variant={range === value ? "secondary" : "ghost"} size="xs" onClick={() => setRange(value)}>{value === "24h" ? "24 小时" : value === "7d" ? "7 天" : "30 天"}</Button>)}</div></div>
-    {loading ? <div className="h-44 text-center text-sm leading-[11rem] text-slate-400">加载趋势数据...</div> : models.length === 0 ? <div className="rounded-md border border-dashed border-slate-200 py-10 text-center text-sm text-slate-400">此时间范围内暂无业务请求</div> : <div className="grid gap-3 lg:grid-cols-2"><TrendChart title="请求量趋势" data={data} models={models} metric="requests" range={range} /><TrendChart title="Token 消耗趋势" data={tokenData} models={models} metric="total_tokens" range={range} /></div>}
+  return <section className="border-t border-slate-200 pt-3"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-base font-semibold text-slate-900">模型趋势</h2><p className="text-[11px] text-slate-400">仅统计业务请求，不包含测试请求</p></div><div className="flex rounded-md border border-slate-200 bg-white p-0.5">{(["24h", "7d", "30d"] as Range[]).map(value => <Button key={value} variant={range === value ? "secondary" : "ghost"} size="xs" onClick={() => setRange(value)}>{value === "24h" ? "24 小时" : value === "7d" ? "7 天" : "30 天"}</Button>)}</div></div>
+    {loading ? <div className="h-32 text-center text-sm leading-[8rem] text-slate-400">加载趋势数据...</div> : models.length === 0 ? <div className="rounded-md border border-dashed border-slate-200 py-10 text-center text-sm text-slate-400">此时间范围内暂无业务请求</div> : <div className="grid gap-3 lg:grid-cols-2"><TrendChart title="请求量趋势" data={data} models={models} metric="requests" range={range} compact={compact} /><TrendChart title="Token 消耗趋势" data={tokenData} models={models} metric="total_tokens" range={range} compact={compact} /></div>}
   </section>;
 }

@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-interface ProxyKey { id: string; name: string; allowed_models: string[]; endpoint_group: string; max_concurrent: number; enabled: boolean; created_at: number; }
+interface ProxyKey { id: string; name: string; key_hash?: string; masked_key_display?: string; secret_available?: boolean; allowed_models: string[]; endpoint_group: string; max_concurrent: number; enabled: boolean; created_at: number; }
 interface ModelResponse { data: string[]; endpoint_count: number; failures: string[]; }
 
 export default function KeysPage() {
@@ -53,6 +53,7 @@ export default function KeysPage() {
     } catch (error) { toast.error(error instanceof Error ? error.message : "创建失败"); }
   }
   async function remove(id: string) { if (!confirm("删除后该 Key 将立即失效，确定继续？")) return; const res = await fetch(`/api/proxy-keys/${id}`, { method: "DELETE" }); if (res.ok) { toast.success("代理 Key 已删除"); load(); } else toast.error("删除失败"); }
+  async function copySecret(key: ProxyKey) { try { const res = await fetch(`/api/proxy-keys/${key.id}/secret`); const data = await res.json(); if (!res.ok) throw new Error(data.error); await navigator.clipboard.writeText(data.secret); toast.success("已复制"); } catch (error) { toast.error(error instanceof Error ? error.message : "复制失败"); } }
   const visibleModels = models.filter(model => model.toLowerCase().includes(modelQuery.toLowerCase()));
 
   return <div className="space-y-4">
@@ -69,6 +70,6 @@ export default function KeysPage() {
       </Dialog>
     </div>
     {created && <Card className="border-amber-300 bg-amber-50"><CardContent className="flex flex-wrap items-center gap-3 p-3"><KeyRound className="text-amber-700" /><div className="min-w-0 flex-1"><b className="text-sm text-amber-900">请立即复制并保存，此 Key 仅显示一次</b><code className="mt-1 block break-all rounded bg-white px-2 py-1 text-xs">{created}</code></div><Button size="sm" onClick={() => { navigator.clipboard.writeText(created); toast.success("已复制"); }}><Copy />复制</Button><Button variant="ghost" size="sm" onClick={() => setCreated(null)}>关闭</Button></CardContent></Card>}
-    <div className="grid gap-3 lg:grid-cols-2">{keys.map(key => <Card key={key.id} className="py-0"><CardContent className="p-3"><div className="flex justify-between gap-3"><div><div className="flex items-center gap-2"><b>{key.name}</b><Badge variant="outline">{key.endpoint_group}</Badge></div><p className="mt-1 text-xs text-muted-foreground">每模型最大并发：{key.max_concurrent}</p></div><Button variant="ghost" size="icon-sm" className="text-destructive" onClick={() => remove(key.id)}><Trash2 /></Button></div><div className="mt-3 flex flex-wrap gap-1">{key.allowed_models.length ? key.allowed_models.map(model => <Badge key={model} variant="secondary" className="text-[10px]">{model}</Badge>) : <span className="text-xs text-muted-foreground">允许全部模型</span>}</div></CardContent></Card>)}{keys.length === 0 && <div className="rounded-lg border border-dashed py-16 text-center text-sm text-muted-foreground lg:col-span-2">尚未创建虚拟代理 Key。旧的 <code>PROXY_API_KEYS</code> 仍可继续使用。</div>}</div>
+    <div className="grid gap-3 lg:grid-cols-2">{keys.map(key => <Card key={key.id} className="py-0"><CardContent className="p-3"><div className="flex justify-between gap-3"><div><div className="flex items-center gap-2"><b>{key.name}</b><Badge variant="outline">{key.endpoint_group}</Badge></div><div className="mt-2 flex items-center gap-2"><code className="text-xs">{key.masked_key_display || key.key_hash}</code><Button size="sm" onClick={() => copySecret(key)}><Copy />复制</Button></div><p className="mt-1 text-xs text-muted-foreground">每模型最大并发：{key.max_concurrent}</p></div><Button variant="ghost" size="icon-sm" className="text-destructive" onClick={() => remove(key.id)}><Trash2 /></Button></div><div className="mt-3 flex flex-wrap gap-1">{key.allowed_models.length ? key.allowed_models.map(model => <Badge key={model} variant="secondary" className="text-[10px]">{model}</Badge>) : <span className="text-xs text-muted-foreground">允许全部模型</span>}</div></CardContent></Card>)}{keys.length === 0 && <div className="rounded-lg border border-dashed py-16 text-center text-sm text-muted-foreground lg:col-span-2">尚未创建虚拟代理 Key。旧的 <code>PROXY_API_KEYS</code> 仍可继续使用。</div>}</div>
   </div>;
 }

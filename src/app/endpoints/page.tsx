@@ -158,6 +158,7 @@ export default function EndpointsPage() {
       let accumulated = "";
 
       try {
+        console.log(panel,'打印数据')
         const res = await fetch(`/api/endpoints/${ep.id}/test`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -465,7 +466,7 @@ export default function EndpointsPage() {
                   {/* Endpoint Info Row */}
                   <div className="space-y-4">
                     <div className="flex items-start gap-3">
-                      <Badge variant={ep.healthy ? "default" : "destructive"}>
+                      <Badge variant="outline" className={ep.healthy ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700"}>
                         {ep.healthy ? "健康" : "不健康"}
                       </Badge>
                       <div className="min-w-0 flex-1">

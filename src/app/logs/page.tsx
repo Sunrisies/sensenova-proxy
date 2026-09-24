@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { ScrollText } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -26,6 +27,8 @@ interface LogEntry {
   id: string;
   endpoint_id: string;
   endpoint_name: string;
+  proxy_key_name?: string;
+  endpoint_group?: string;
   method: string;
   path: string;
   status: number;
@@ -138,16 +141,19 @@ function LogsView() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">实时日志</h1>
         <div className="flex items-center gap-4">
-          <Badge variant={connected ? "default" : "destructive"}>
+          <Badge variant="outline" className={connected ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700"}>
             {connected ? "已连接" : "未连接"}
           </Badge>
           <span className="text-sm text-muted-foreground">共 {total} 条，最新在前</span>
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>请求日志</CardTitle>
+      <Card className="shadow-sm">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-base font-semibold">
+            <ScrollText className="h-4 w-4 text-muted-foreground" />
+            请求日志
+          </CardTitle>
         </CardHeader>
         <CardContent className="px-2">
           {logs.length === 0 ? (
@@ -194,6 +200,29 @@ function formatTime(ts: number) {
   return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
 }
 
+function StatusPill({ status, success }: { status: number; success: boolean }) {
+  if (!status) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-1.5 py-0.5 text-[11px] font-medium text-rose-600 ring-1 ring-rose-200">
+        <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+        错误
+      </span>
+    );
+  }
+  const tone = success
+    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+    : status >= 500
+      ? "bg-rose-50 text-rose-700 ring-rose-200"
+      : status >= 400
+        ? "bg-amber-50 text-amber-700 ring-amber-200"
+        : "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ring-1 ${tone}`}>
+      {status}
+    </span>
+  );
+}
+
 function formatTokens(log: LogEntry) {
   if (log.total_tokens == null) return "-";
   return `${log.total_tokens.toLocaleString()}（入 ${log.prompt_tokens?.toLocaleString() ?? "-"} / 出 ${log.completion_tokens?.toLocaleString() ?? "-"}）${log.token_estimated ? " · 估算" : ""}`;
@@ -212,7 +241,7 @@ function LogRow({ log }: { log: LogEntry }) {
     <>
       <TableRow>
         <TableCell>
-          <Badge variant={log.success ? "default" : "destructive"}>{log.status || "错误"}</Badge>
+          <StatusPill status={log.status} success={log.success} />
         </TableCell>
         <TableCell className="font-mono font-medium">{log.model || "未知模型"}</TableCell>
         <TableCell>
@@ -220,6 +249,13 @@ function LogRow({ log }: { log: LogEntry }) {
         </TableCell>
         <TableCell>
           <div>{log.endpoint_name}</div>
+          {(log.proxy_key_name || log.endpoint_group) && (
+            <div className="text-xs text-muted-foreground">
+              {log.proxy_key_name && <span>Key: {log.proxy_key_name}</span>}
+              {log.proxy_key_name && log.endpoint_group && " · "}
+              {log.endpoint_group && <span>组: {log.endpoint_group}</span>}
+            </div>
+          )}
           {log.switch_chain && (
             <div className="text-xs text-muted-foreground">链路: {log.switch_chain}</div>
           )}

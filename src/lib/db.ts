@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import { v4 as uuidv4 } from 'uuid';
+import { encryptSecret, decryptSecret } from './crypto';
 
 let pool: mysql.Pool | null = null;
 let initPromise: Promise<void> | null = null;
@@ -31,11 +32,20 @@ async function getPool(): Promise<mysql.Pool> {
   return pool!;
 }
 
-async function poolQuery(sql: string, values: unknown[] = []): Promise<[Record<string, unknown>[], mysql.ResultSetHeader]> {
-  return (await getPool() as any).query(sql, values);
+type DbPool = {
+  query(sql: string, values?: unknown[]): Promise<[unknown, unknown]>;
+};
+
+async function getDb(): Promise<DbPool> {
+  return (await getPool()) as unknown as DbPool;
 }
 
-async function createIndexSafe(p: any, sql: string): Promise<void> {
+async function poolQuery(sql: string, values: unknown[] = []): Promise<[Record<string, unknown>[], mysql.ResultSetHeader]> {
+  const [rows, fields] = await (await getDb()).query(sql, values);
+  return [rows as Record<string, unknown>[], fields as mysql.ResultSetHeader];
+}
+
+async function createIndexSafe(p: DbPool, sql: string): Promise<void> {
   try {
     await p.query(sql);
   } catch (e) {
@@ -44,7 +54,7 @@ async function createIndexSafe(p: any, sql: string): Promise<void> {
   }
 }
 
-async function addColumnSafe(p: any, sql: string): Promise<void> {
+async function addColumnSafe(p: DbPool, sql: string): Promise<void> {
   try {
     await p.query(sql);
   } catch (e) {
@@ -82,7 +92,7 @@ async function initializePool(): Promise<void> {
 
   pool = mysql.createPool(getPoolOptions());
 
-  const p = pool as any;
+  const p = pool as unknown as DbPool;
 
   await p.query(`
     CREATE TABLE IF NOT EXISTS endpoints (
@@ -112,6 +122,9 @@ async function initializePool(): Promise<void> {
       request_id VARCHAR(36),
       endpoint_id VARCHAR(36) NOT NULL,
       endpoint_name VARCHAR(255) NOT NULL,
+      proxy_key_id VARCHAR(36) NULL,
+      proxy_key_name VARCHAR(255) NULL,
+      endpoint_group VARCHAR(100) NULL,
       method VARCHAR(10) NOT NULL,
       path VARCHAR(1024) NOT NULL,
       status INT NOT NULL,
@@ -158,6 +171,8 @@ async function initializePool(): Promise<void> {
       id VARCHAR(36) PRIMARY KEY,
       name VARCHAR(100) NOT NULL UNIQUE,
       key_hash CHAR(64) NOT NULL UNIQUE,
+      secret_key TEXT,
+      key_display VARCHAR(255) DEFAULT '',
       allowed_models TEXT,
       endpoint_group VARCHAR(100) NOT NULL DEFAULT 'default',
       max_concurrent INT NOT NULL DEFAULT 1,
@@ -178,6 +193,11 @@ async function initializePool(): Promise<void> {
 
   await addColumnSafe(p, "ALTER TABLE endpoints ADD COLUMN endpoint_group VARCHAR(100) NOT NULL DEFAULT 'default' AFTER weight");
   await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN token_estimated TINYINT(1) DEFAULT 0 AFTER total_tokens');
+  await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN proxy_key_id VARCHAR(36) NULL AFTER endpoint_name');
+  await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN proxy_key_name VARCHAR(255) NULL AFTER proxy_key_id');
+  await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN endpoint_group VARCHAR(100) NULL AFTER proxy_key_name');
+  await addColumnSafe(p, "ALTER TABLE proxy_keys ADD COLUMN secret_key TEXT AFTER key_hash");
+  await addColumnSafe(p, "ALTER TABLE proxy_keys ADD COLUMN key_display VARCHAR(255) DEFAULT '' AFTER secret_key");
   await createIndexSafe(p, 'CREATE INDEX idx_request_logs_created_at ON request_logs(created_at DESC)');
   await createIndexSafe(p, 'CREATE INDEX idx_endpoints_priority ON endpoints(priority ASC, weight DESC)');
   await createIndexSafe(p, 'CREATE INDEX idx_request_logs_request_id ON request_logs(request_id)');
@@ -237,6 +257,9 @@ export interface ProxyKey {
   id: string;
   name: string;
   key_hash: string;
+  masked_key_display: string;
+  secret_key?: string;
+  secret_available: boolean;
   allowed_models: string[];
   endpoint_group: string;
   max_concurrent: number;
@@ -248,20 +271,63 @@ export interface ProxyKey {
 export interface CreateProxyKeyInput {
   name: string;
   key_hash: string;
+  secret?: string;
   allowed_models?: string[];
   endpoint_group?: string;
   max_concurrent?: number;
 }
 
-function normalizeProxyKey(row: Record<string, unknown>): ProxyKey {
-  let allowed_models: string[] = [];
-  try { allowed_models = row.allowed_models ? JSON.parse(String(row.allowed_models)) : []; } catch { /* legacy malformed configuration */ }
-  return { id: String(row.id), name: String(row.name), key_hash: String(row.key_hash), allowed_models, endpoint_group: String(row.endpoint_group || 'default'), max_concurrent: Number(row.max_concurrent), enabled: Boolean(row.enabled), created_at: Number(row.created_at), updated_at: Number(row.updated_at) };
+export interface UpdateProxyKeyInput {
+  name?: string;
+  allowed_models?: string[];
+  endpoint_group?: string;
+  max_concurrent?: number;
+  enabled?: boolean;
 }
 
-export async function getProxyKeys(): Promise<ProxyKey[]> {
+function redactProxyKey(hash: string): string {
+  return `${hash.slice(0, 8)}…`;
+}
+
+function formatProxyKeyDisplay(secret: string): string {
+  if (!secret) return '';
+  if (secret.length <= 18) return `${secret.slice(0, 8)}…${secret.slice(-4)}`;
+  return `${secret.slice(0, 12)}…${secret.slice(-6)}`;
+}
+
+function normalizeProxyKey(row: Record<string, unknown>, includeSecret = false): ProxyKey {
+  let allowed_models: string[] = [];
+  try { allowed_models = row.allowed_models ? JSON.parse(String(row.allowed_models)) : []; } catch { /* legacy malformed configuration */ }
+  const keyHash = String(row.key_hash);
+  let secretKey = '';
+  if (includeSecret && row.secret_key) {
+    try { secretKey = decryptSecret(String(row.secret_key)); } catch { secretKey = ''; }
+  }
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    key_hash: redactProxyKey(keyHash),
+    masked_key_display: String(row.key_display || (secretKey ? formatProxyKeyDisplay(secretKey) : `sk-snp-${keyHash.slice(0, 12)}…${keyHash.slice(-4)}`)),
+    secret_key: secretKey || undefined,
+    secret_available: Boolean(secretKey),
+    allowed_models,
+    endpoint_group: String(row.endpoint_group || 'default'),
+    max_concurrent: Number(row.max_concurrent),
+    enabled: Boolean(row.enabled),
+    created_at: Number(row.created_at),
+    updated_at: Number(row.updated_at),
+  };
+}
+
+export async function getProxyKeys(includeSecret = false): Promise<ProxyKey[]> {
   const [rows] = await poolQuery('SELECT * FROM proxy_keys ORDER BY created_at DESC');
-  return (rows as Record<string, unknown>[]).map(normalizeProxyKey);
+  return (rows as Record<string, unknown>[]).map(row => normalizeProxyKey(row, includeSecret));
+}
+
+export async function getProxyKeyById(id: string, includeSecret = false): Promise<ProxyKey | null> {
+  const [rows] = await poolQuery('SELECT * FROM proxy_keys WHERE id = ?', [id]);
+  const row = (rows as Record<string, unknown>[])[0];
+  return row ? normalizeProxyKey(row, includeSecret) : null;
 }
 
 export async function getProxyKeyByHash(keyHash: string): Promise<ProxyKey | null> {
@@ -271,15 +337,37 @@ export async function getProxyKeyByHash(keyHash: string): Promise<ProxyKey | nul
 }
 
 export async function createProxyKey(input: CreateProxyKeyInput): Promise<ProxyKey> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const id = uuidv4(); const now = Math.floor(Date.now() / 1000);
-  await db.query('INSERT INTO proxy_keys (id, name, key_hash, allowed_models, endpoint_group, max_concurrent, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [id, input.name, input.key_hash, JSON.stringify(input.allowed_models ?? []), input.endpoint_group?.trim() || 'default', Math.max(1, input.max_concurrent ?? 1), now, now]);
+  const secretKey = input.secret ? encryptSecret(input.secret) : '';
+  const keyDisplay = input.secret ? formatProxyKeyDisplay(input.secret) : '';
+  await db.query('INSERT INTO proxy_keys (id, name, key_hash, secret_key, key_display, allowed_models, endpoint_group, max_concurrent, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)', [id, input.name, input.key_hash, secretKey, keyDisplay, JSON.stringify(input.allowed_models ?? []), input.endpoint_group?.trim() || 'default', Math.max(1, input.max_concurrent ?? 1), now, now]);
   const [rows] = await db.query('SELECT * FROM proxy_keys WHERE id = ?', [id]);
-  return normalizeProxyKey(rows[0]);
+  return normalizeProxyKey(rows[0], true);
+}
+
+export async function updateProxyKey(id: string, input: UpdateProxyKeyInput): Promise<ProxyKey | null> {
+  const db = await getDb();
+  const existing = await getProxyKeyById(id);
+  if (!existing) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  if (input.name !== undefined) { updates.push('name = ?'); values.push(input.name.trim()); }
+  if (input.allowed_models !== undefined) { updates.push('allowed_models = ?'); values.push(JSON.stringify(input.allowed_models.filter(Boolean))); }
+  if (input.endpoint_group !== undefined) { updates.push('endpoint_group = ?'); values.push(input.endpoint_group.trim() || 'default'); }
+  if (input.max_concurrent !== undefined) { updates.push('max_concurrent = ?'); values.push(Math.max(1, input.max_concurrent)); }
+  if (input.enabled !== undefined) { updates.push('enabled = ?'); values.push(input.enabled ? 1 : 0); }
+  if (updates.length === 0) return existing;
+  updates.push('updated_at = ?');
+  values.push(now);
+  values.push(id);
+  await db.query(`UPDATE proxy_keys SET ${updates.join(', ')} WHERE id = ?`, values);
+  return getProxyKeyById(id);
 }
 
 export async function deleteProxyKey(id: string): Promise<boolean> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const [result] = await db.query('DELETE FROM proxy_keys WHERE id = ?', [id]);
   return result.affectedRows > 0;
 }
@@ -289,6 +377,9 @@ export interface RequestLog {
   request_id?: string;
   endpoint_id: string;
   endpoint_name: string;
+  proxy_key_id?: string;
+  proxy_key_name?: string;
+  endpoint_group?: string;
   method: string;
   path: string;
   status: number;
@@ -395,7 +486,7 @@ export async function getEndpoint(id: string): Promise<Endpoint | null> {
 }
 
 export async function createEndpoint(input: CreateEndpointInput): Promise<Endpoint> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const id = uuidv4();
   const now = Math.floor(Date.now() / 1000);
 
@@ -424,7 +515,7 @@ export async function createEndpoint(input: CreateEndpointInput): Promise<Endpoi
 }
 
 export async function updateEndpoint(id: string, input: UpdateEndpointInput): Promise<Endpoint | null> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const existing = await getEndpoint(id);
   if (!existing) return null;
 
@@ -455,7 +546,7 @@ export async function updateEndpoint(id: string, input: UpdateEndpointInput): Pr
 }
 
 export async function updateEndpointQuotaTokens(id: string, accessToken: string, expiresAt: number, refreshToken?: string): Promise<void> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const now = Math.floor(Date.now() / 1000);
   if (refreshToken) {
     await db.query(
@@ -471,13 +562,13 @@ export async function updateEndpointQuotaTokens(id: string, accessToken: string,
 }
 
 export async function deleteEndpoint(id: string): Promise<boolean> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const [result] = await db.query('DELETE FROM endpoints WHERE id = ?', [id]);
   return (result as mysql.ResultSetHeader).affectedRows > 0;
 }
 
 export async function markHealthy(id: string): Promise<void> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const now = Math.floor(Date.now() / 1000);
   await db.query(
     'UPDATE endpoints SET healthy = 1, error_count = 0, cooldown_until = 0, last_check = ?, updated_at = ? WHERE id = ?',
@@ -486,7 +577,7 @@ export async function markHealthy(id: string): Promise<void> {
 }
 
 export async function markRateLimited(id: string, cooldownSeconds = 60): Promise<void> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const now = Math.floor(Date.now() / 1000);
   await db.query(
     'UPDATE endpoints SET cooldown_until = ?, last_check = ?, updated_at = ? WHERE id = ?',
@@ -495,7 +586,7 @@ export async function markRateLimited(id: string, cooldownSeconds = 60): Promise
 }
 
 export async function markUnhealthy(id: string): Promise<void> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const now = Math.floor(Date.now() / 1000);
   await db.query(
     'UPDATE endpoints SET healthy = 0, error_count = error_count + 1, last_check = ?, updated_at = ? WHERE id = ?',
@@ -504,15 +595,16 @@ export async function markUnhealthy(id: string): Promise<void> {
 }
 
 export async function addLog(log: Omit<RequestLog, 'id' | 'created_at'>): Promise<string> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const id = uuidv4();
   const now = Math.floor(Date.now() / 1000);
 
   await db.query(
-    `INSERT INTO request_logs (id, request_id, endpoint_id, endpoint_name, method, path, status, duration, success, switched, error, model, stream, client_ip, first_byte_ms, prompt_tokens, completion_tokens, total_tokens, token_estimated, cost, switch_chain, is_test, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO request_logs (id, request_id, endpoint_id, endpoint_name, proxy_key_id, proxy_key_name, endpoint_group, method, path, status, duration, success, switched, error, model, stream, client_ip, first_byte_ms, prompt_tokens, completion_tokens, total_tokens, token_estimated, cost, switch_chain, is_test, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      id, log.request_id ?? null, log.endpoint_id, log.endpoint_name, log.method, log.path, log.status,
+      id, log.request_id ?? null, log.endpoint_id, log.endpoint_name, log.proxy_key_id ?? null, log.proxy_key_name ?? null, log.endpoint_group ?? null,
+      log.method, log.path, log.status,
       log.duration, log.success ? 1 : 0, log.switched ? 1 : 0, log.error ?? null,
       log.model ?? null, log.stream ? 1 : 0, log.client_ip ?? null,
       log.first_byte_ms ?? null, log.prompt_tokens ?? null,
@@ -524,7 +616,7 @@ export async function addLog(log: Omit<RequestLog, 'id' | 'created_at'>): Promis
 }
 
 export async function addRequestAttempt(attempt: Omit<RequestAttempt, 'id' | 'created_at'>): Promise<string> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const id = uuidv4();
   await db.query(
     `INSERT INTO request_attempts (id, request_id, endpoint_id, endpoint_name, method, path, status, duration, success, error, model, created_at)
@@ -539,7 +631,7 @@ export async function addRequestAttempt(attempt: Omit<RequestAttempt, 'id' | 'cr
 }
 
 export async function updateRequestAttempt(id: string, update: { status: number; success: boolean; error?: string; duration: number }): Promise<void> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   await db.query(
     'UPDATE request_attempts SET status = ?, success = ?, error = ?, duration = ? WHERE id = ?',
     [update.status, update.success ? 1 : 0, update.error ?? null, update.duration, id]
@@ -581,7 +673,7 @@ export async function getLoginAttempt(loginKey: string): Promise<LoginAttempt | 
 }
 
 export async function recordLoginFailure(loginKey: string, maxFailures: number, lockSeconds: number): Promise<LoginAttempt> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const current = await getLoginAttempt(loginKey);
   const now = Math.floor(Date.now() / 1000);
   const failures = current && current.locked_until <= now ? current.failures + 1 : (current?.failures ?? 0) + 1;
@@ -602,12 +694,12 @@ export async function recordLoginFailure(loginKey: string, maxFailures: number, 
 }
 
 export async function clearLoginAttempt(loginKey: string): Promise<void> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   await db.query('DELETE FROM login_attempts WHERE login_key = ?', [loginKey]);
 }
 
 export async function getLogs(page: number, pageSize: number): Promise<{ logs: RequestLog[]; total: number }> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const [countRows] = await db.query('SELECT COUNT(*) AS count FROM request_logs');
   const total = Number((countRows as Record<string, unknown>[])[0].count);
   const [rows] = await db.query(
@@ -619,6 +711,9 @@ export async function getLogs(page: number, pageSize: number): Promise<{ logs: R
     request_id: r.request_id ? String(r.request_id) : undefined,
     endpoint_id: String(r.endpoint_id),
     endpoint_name: String(r.endpoint_name),
+    proxy_key_id: r.proxy_key_id ? String(r.proxy_key_id) : undefined,
+    proxy_key_name: r.proxy_key_name ? String(r.proxy_key_name) : undefined,
+    endpoint_group: r.endpoint_group ? String(r.endpoint_group) : undefined,
     method: String(r.method),
     path: String(r.path),
     status: Number(r.status),
@@ -667,7 +762,7 @@ export interface UsageStats {
 }
 
 export async function getUsageStats(filters: UsageStatsFilters = {}): Promise<UsageStats> {
-  const db = (await getPool()) as any;
+  const db = await getDb();
   const conditions = ['is_test = 0'];
   const values: unknown[] = [];
   if (filters.since !== undefined) { conditions.push('created_at >= ?'); values.push(filters.since); }

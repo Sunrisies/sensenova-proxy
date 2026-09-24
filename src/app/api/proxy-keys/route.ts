@@ -5,7 +5,7 @@ import { createProxyKeySecret, hashProxyKey } from '@/lib/proxy-access';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  return NextResponse.json((await getProxyKeys()).map(key => ({ ...key, key_hash: `${key.key_hash.slice(0, 8)}…` })));
+  return NextResponse.json(await getProxyKeys());
 }
 
 export async function POST(request: NextRequest) {
