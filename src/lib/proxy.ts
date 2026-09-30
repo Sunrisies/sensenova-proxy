@@ -21,14 +21,28 @@ export function emitLog(log: unknown) {
   logListeners.forEach(listener => listener(log));
 }
 
-function readUsage(payload: unknown): { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } {
+function readUsage(payload: unknown): {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  audio_tokens?: number;
+} {
   const usage = (payload as { usage?: unknown } | null)?.usage;
   if (!usage || typeof usage !== 'object') return {};
   const value = usage as Record<string, unknown>;
+  const promptDetails = value.prompt_tokens_details as Record<string, unknown> | undefined;
+  const completionDetails = value.completion_tokens_details as Record<string, unknown> | undefined;
+  const numberValue = (direct: unknown, nested: unknown) =>
+    typeof direct === 'number' ? direct : typeof nested === 'number' ? nested : undefined;
   return {
     prompt_tokens: typeof value.prompt_tokens === 'number' ? value.prompt_tokens : undefined,
     completion_tokens: typeof value.completion_tokens === 'number' ? value.completion_tokens : undefined,
     total_tokens: typeof value.total_tokens === 'number' ? value.total_tokens : undefined,
+    cached_tokens: numberValue(value.cached_tokens, promptDetails?.cached_tokens),
+    reasoning_tokens: numberValue(value.reasoning_tokens, completionDetails?.reasoning_tokens),
+    audio_tokens: numberValue(value.audio_tokens, promptDetails?.audio_tokens),
   };
 }
 
@@ -249,6 +263,9 @@ export async function proxyRequest(
         let promptTokens: number | undefined;
         let completionTokens: number | undefined;
         let totalTokens: number | undefined;
+        let cachedTokens: number | undefined;
+        let reasoningTokens: number | undefined;
+        let audioTokens: number | undefined;
         let outputText = '';
         let finalized = false;
         let downstreamCancelled = false;
@@ -264,9 +281,13 @@ export async function proxyRequest(
             if (typeof delta === 'string') outputText += delta;
             const usage = event.usage as Record<string, unknown> | undefined;
             if (usage) {
-              if (typeof usage.prompt_tokens === 'number') promptTokens = usage.prompt_tokens;
-              if (typeof usage.completion_tokens === 'number') completionTokens = usage.completion_tokens;
-              if (typeof usage.total_tokens === 'number') totalTokens = usage.total_tokens;
+              const parsedUsage = readUsage({ usage });
+              if (parsedUsage.prompt_tokens !== undefined) promptTokens = parsedUsage.prompt_tokens;
+              if (parsedUsage.completion_tokens !== undefined) completionTokens = parsedUsage.completion_tokens;
+              if (parsedUsage.total_tokens !== undefined) totalTokens = parsedUsage.total_tokens;
+              if (parsedUsage.cached_tokens !== undefined) cachedTokens = parsedUsage.cached_tokens;
+              if (parsedUsage.reasoning_tokens !== undefined) reasoningTokens = parsedUsage.reasoning_tokens;
+              if (parsedUsage.audio_tokens !== undefined) audioTokens = parsedUsage.audio_tokens;
             }
           } catch {
           }
@@ -276,7 +297,14 @@ export async function proxyRequest(
           if (finalized) return;
           finalized = true;
           releaseConcurrency?.();
-          const usage = usageWithFallback({ prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: totalTokens }, promptTextTokens, outputText);
+          const usage = usageWithFallback({
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: totalTokens,
+            cached_tokens: cachedTokens,
+            reasoning_tokens: reasoningTokens,
+            audio_tokens: audioTokens,
+          }, promptTextTokens, outputText);
           const completed = {
             ...baseLog,
             status,

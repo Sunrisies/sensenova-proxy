@@ -139,6 +139,9 @@ async function initializePool(): Promise<void> {
       prompt_tokens INT,
       completion_tokens INT,
       total_tokens INT,
+      cached_tokens INT,
+      reasoning_tokens INT,
+      audio_tokens INT,
       token_estimated TINYINT(1) DEFAULT 0,
       cost DOUBLE,
       switch_chain TEXT,
@@ -192,7 +195,10 @@ async function initializePool(): Promise<void> {
   `);
 
   await addColumnSafe(p, "ALTER TABLE endpoints ADD COLUMN endpoint_group VARCHAR(100) NOT NULL DEFAULT 'default' AFTER weight");
-  await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN token_estimated TINYINT(1) DEFAULT 0 AFTER total_tokens');
+  await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN cached_tokens INT NULL AFTER total_tokens');
+  await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN reasoning_tokens INT NULL AFTER cached_tokens');
+  await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN audio_tokens INT NULL AFTER reasoning_tokens');
+  await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN token_estimated TINYINT(1) DEFAULT 0 AFTER audio_tokens');
   await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN proxy_key_id VARCHAR(36) NULL AFTER endpoint_name');
   await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN proxy_key_name VARCHAR(255) NULL AFTER proxy_key_id');
   await addColumnSafe(p, 'ALTER TABLE request_logs ADD COLUMN endpoint_group VARCHAR(100) NULL AFTER proxy_key_name');
@@ -343,7 +349,9 @@ export async function createProxyKey(input: CreateProxyKeyInput): Promise<ProxyK
   const keyDisplay = input.secret ? formatProxyKeyDisplay(input.secret) : '';
   await db.query('INSERT INTO proxy_keys (id, name, key_hash, secret_key, key_display, allowed_models, endpoint_group, max_concurrent, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)', [id, input.name, input.key_hash, secretKey, keyDisplay, JSON.stringify(input.allowed_models ?? []), input.endpoint_group?.trim() || 'default', Math.max(1, input.max_concurrent ?? 1), now, now]);
   const [rows] = await db.query('SELECT * FROM proxy_keys WHERE id = ?', [id]);
-  return normalizeProxyKey(rows[0], true);
+  const row = (rows as Record<string, unknown>[])[0];
+  if (!row) throw new Error('Created proxy key could not be loaded');
+  return normalizeProxyKey(row, true);
 }
 
 export async function updateProxyKey(id: string, input: UpdateProxyKeyInput): Promise<ProxyKey | null> {
@@ -369,7 +377,7 @@ export async function updateProxyKey(id: string, input: UpdateProxyKeyInput): Pr
 export async function deleteProxyKey(id: string): Promise<boolean> {
   const db = await getDb();
   const [result] = await db.query('DELETE FROM proxy_keys WHERE id = ?', [id]);
-  return result.affectedRows > 0;
+  return (result as { affectedRows: number }).affectedRows > 0;
 }
 
 export interface RequestLog {
@@ -394,6 +402,9 @@ export interface RequestLog {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  audio_tokens?: number;
   token_estimated?: boolean;
   cost?: number;
   switch_chain?: string;
@@ -600,15 +611,17 @@ export async function addLog(log: Omit<RequestLog, 'id' | 'created_at'>): Promis
   const now = Math.floor(Date.now() / 1000);
 
   await db.query(
-    `INSERT INTO request_logs (id, request_id, endpoint_id, endpoint_name, proxy_key_id, proxy_key_name, endpoint_group, method, path, status, duration, success, switched, error, model, stream, client_ip, first_byte_ms, prompt_tokens, completion_tokens, total_tokens, token_estimated, cost, switch_chain, is_test, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO request_logs (id, request_id, endpoint_id, endpoint_name, proxy_key_id, proxy_key_name, endpoint_group, method, path, status, duration, success, switched, error, model, stream, client_ip, first_byte_ms, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens, audio_tokens, token_estimated, cost, switch_chain, is_test, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id, log.request_id ?? null, log.endpoint_id, log.endpoint_name, log.proxy_key_id ?? null, log.proxy_key_name ?? null, log.endpoint_group ?? null,
       log.method, log.path, log.status,
       log.duration, log.success ? 1 : 0, log.switched ? 1 : 0, log.error ?? null,
       log.model ?? null, log.stream ? 1 : 0, log.client_ip ?? null,
       log.first_byte_ms ?? null, log.prompt_tokens ?? null,
-      log.completion_tokens ?? null, log.total_tokens ?? null, log.token_estimated ? 1 : 0,
+      log.completion_tokens ?? null, log.total_tokens ?? null,
+      log.cached_tokens ?? null, log.reasoning_tokens ?? null, log.audio_tokens ?? null,
+      log.token_estimated ? 1 : 0,
       log.cost ?? null, log.switch_chain ?? null, log.is_test ? 1 : 0, now,
     ]
   );
@@ -728,6 +741,9 @@ export async function getLogs(page: number, pageSize: number): Promise<{ logs: R
     prompt_tokens: r.prompt_tokens ? Number(r.prompt_tokens) : undefined,
     completion_tokens: r.completion_tokens ? Number(r.completion_tokens) : undefined,
     total_tokens: r.total_tokens !== null ? Number(r.total_tokens) : undefined,
+    cached_tokens: r.cached_tokens !== null ? Number(r.cached_tokens) : undefined,
+    reasoning_tokens: r.reasoning_tokens !== null ? Number(r.reasoning_tokens) : undefined,
+    audio_tokens: r.audio_tokens !== null ? Number(r.audio_tokens) : undefined,
     token_estimated: Boolean(r.token_estimated),
     cost: r.cost ? Number(r.cost) : undefined,
     switch_chain: r.switch_chain ? String(r.switch_chain) : undefined,
@@ -748,6 +764,7 @@ export interface UsageStats {
   successful_requests: number;
   failed_requests: number;
   prompt_tokens: number | null;
+  cached_tokens: number | null;
   completion_tokens: number | null;
   total_tokens: number | null;
   by_model: Array<{
@@ -778,6 +795,7 @@ export async function getUsageStats(filters: UsageStatsFilters = {}): Promise<Us
       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successful_requests,
       SUM(CASE WHEN success = 1 THEN 0 ELSE 1 END) AS failed_requests,
       SUM(prompt_tokens) AS prompt_tokens,
+      SUM(cached_tokens) AS cached_tokens,
       SUM(completion_tokens) AS completion_tokens,
       SUM(total_tokens) AS total_tokens
     FROM request_logs WHERE ${where}
@@ -795,6 +813,7 @@ export async function getUsageStats(filters: UsageStatsFilters = {}): Promise<Us
       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successful_requests,
       SUM(CASE WHEN success = 1 THEN 0 ELSE 1 END) AS failed_requests,
       SUM(prompt_tokens) AS prompt_tokens,
+      SUM(cached_tokens) AS cached_tokens,
       SUM(completion_tokens) AS completion_tokens,
       SUM(total_tokens) AS total_tokens
     FROM request_logs WHERE ${where}
@@ -807,6 +826,7 @@ export async function getUsageStats(filters: UsageStatsFilters = {}): Promise<Us
     successful_requests: Number(row.successful_requests),
     failed_requests: Number(row.failed_requests),
     prompt_tokens: row.prompt_tokens !== null ? Number(row.prompt_tokens) : null,
+    cached_tokens: row.cached_tokens !== null ? Number(row.cached_tokens) : null,
     completion_tokens: row.completion_tokens !== null ? Number(row.completion_tokens) : null,
     total_tokens: row.total_tokens !== null ? Number(row.total_tokens) : null,
   }));
@@ -816,6 +836,7 @@ export async function getUsageStats(filters: UsageStatsFilters = {}): Promise<Us
     successful_requests: summary.successful_requests ?? 0,
     failed_requests: summary.failed_requests ?? 0,
     prompt_tokens: summary.prompt_tokens ?? null,
+    cached_tokens: summary.cached_tokens ?? null,
     completion_tokens: summary.completion_tokens ?? null,
     total_tokens: summary.total_tokens ?? null,
     by_model,

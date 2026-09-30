@@ -2,6 +2,9 @@ export interface TokenUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  audio_tokens?: number;
   token_estimated?: boolean;
 }
 
@@ -49,6 +52,9 @@ export function usageWithFallback(
       prompt_tokens,
       completion_tokens,
       total_tokens: usage.total_tokens ?? prompt_tokens + completion_tokens,
+      cached_tokens: usage.cached_tokens,
+      reasoning_tokens: usage.reasoning_tokens,
+      audio_tokens: usage.audio_tokens,
       token_estimated: false,
     };
   }

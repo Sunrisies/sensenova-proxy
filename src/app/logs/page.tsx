@@ -43,6 +43,9 @@ interface LogEntry {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  audio_tokens?: number;
   token_estimated?: boolean;
   cost?: number;
   switch_chain?: string;
@@ -225,7 +228,12 @@ function StatusPill({ status, success }: { status: number; success: boolean }) {
 
 function formatTokens(log: LogEntry) {
   if (log.total_tokens == null) return "-";
-  return `${log.total_tokens.toLocaleString()}（入 ${log.prompt_tokens?.toLocaleString() ?? "-"} / 出 ${log.completion_tokens?.toLocaleString() ?? "-"}）${log.token_estimated ? " · 估算" : ""}`;
+  const details = [`入 ${log.prompt_tokens?.toLocaleString() ?? "-"}`];
+  if (log.cached_tokens != null) details.push(`缓存 ${log.cached_tokens.toLocaleString()}`);
+  if (log.reasoning_tokens != null) details.push(`推理 ${log.reasoning_tokens.toLocaleString()}`);
+  if (log.audio_tokens != null) details.push(`音频 ${log.audio_tokens.toLocaleString()}`);
+  details.push(`出 ${log.completion_tokens?.toLocaleString() ?? "-"}`);
+  return `${log.total_tokens.toLocaleString()}（${details.join(" / ")}）${log.token_estimated ? " · 估算" : ""}`;
 }
 
 function formatLatency(log: LogEntry) {

@@ -10,6 +10,7 @@ interface ModelStats {
   successful_requests: number;
   failed_requests: number;
   prompt_tokens: number | null;
+  cached_tokens: number | null;
   completion_tokens: number | null;
   total_tokens: number | null;
 }
@@ -21,6 +22,7 @@ interface StatsResponse {
     successful_requests: number;
     failed_requests: number;
     prompt_tokens: number | null;
+    cached_tokens: number | null;
     completion_tokens: number | null;
     total_tokens: number | null;
     by_model: ModelStats[];
@@ -46,11 +48,12 @@ function compactNumber(value: number): string {
   return number(value);
 }
 
-const TONE_CLASSES: Record<"slate" | "emerald" | "rose" | "indigo", { text: string; dot: string }> = {
+const TONE_CLASSES: Record<"slate" | "emerald" | "rose" | "indigo" | "sky", { text: string; dot: string }> = {
   slate: { text: "text-slate-900", dot: "bg-slate-400" },
   emerald: { text: "text-emerald-600", dot: "bg-emerald-500" },
   rose: { text: "text-rose-600", dot: "bg-rose-500" },
   indigo: { text: "text-indigo-600", dot: "bg-indigo-500" },
+  sky: { text: "text-sky-600", dot: "bg-sky-500" },
 };
 
 export default function StatsPage() {
@@ -146,18 +149,19 @@ export default function StatsPage() {
                 { label: "失败", value: data.stats.failed_requests, tone: "rose", isToken: false, zeroIsSuccess: true },
                 { label: "总 Token", value: data.stats.total_tokens, tone: "indigo", isToken: true },
                 { label: "输入 Token", value: data.stats.prompt_tokens, tone: "slate", isToken: true },
+                { label: "缓存 Token", value: data.stats.cached_tokens, tone: "sky", isToken: true },
                 { label: "输出 Token", value: data.stats.completion_tokens, tone: "slate", isToken: true },
               ] as {
                 label: string;
                 value: number | null;
-                tone: "slate" | "emerald" | "rose" | "indigo";
+                tone: "slate" | "emerald" | "rose" | "indigo" | "sky";
                 isToken: boolean;
                 zeroIsSuccess?: boolean;
               }[]
             ).map((m) => {
               const value = m.value as number | null;
               const text = m.isToken ? displayToken(value, compact) : formatNumber(Number(value));
-              const effectiveTone: "slate" | "emerald" | "rose" | "indigo" =
+              const effectiveTone: "slate" | "emerald" | "rose" | "indigo" | "sky" =
                 m.zeroIsSuccess && Number(value) === 0 ? "slate" : m.tone;
               const toneClass = TONE_CLASSES[effectiveTone];
               return (
@@ -181,8 +185,8 @@ export default function StatsPage() {
             <CardContent className="p-0">
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[760px] text-sm">
-                  <thead><tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground"><th className="px-5 py-3">模型</th><th className="px-3 py-3">调用次数</th><th className="px-3 py-3">成功</th><th className="px-3 py-3">失败</th><th className="px-3 py-3">成功率</th><th className="px-3 py-3">输入 Token</th><th className="px-3 py-3">输出 Token</th><th className="px-5 py-3">总 Token</th></tr></thead>
-                  <tbody>{data.stats.by_model.map((item) => <tr key={item.model} className="border-b last:border-0"><td className="px-5 py-4 font-medium">{item.model}</td><td className="px-3 py-4">{formatNumber(item.requests)}</td><td className="px-3 py-4 text-emerald-600">{formatNumber(item.successful_requests)}</td><td className="px-3 py-4 text-rose-600">{formatNumber(item.failed_requests)}</td><td className="px-3 py-4">{item.requests ? `${Math.round(item.successful_requests / item.requests * 1000) / 10}%` : "-"}</td><td className="px-3 py-4">{displayToken(item.prompt_tokens, compact)}</td><td className="px-3 py-4">{displayToken(item.completion_tokens, compact)}</td><td className="px-5 py-4 font-medium">{displayToken(item.total_tokens, compact)}</td></tr>)}</tbody>
+                  <thead><tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground"><th className="px-5 py-3">模型</th><th className="px-3 py-3">调用次数</th><th className="px-3 py-3">成功</th><th className="px-3 py-3">失败</th><th className="px-3 py-3">成功率</th><th className="px-3 py-3">输入 Token</th><th className="px-3 py-3">缓存 Token</th><th className="px-3 py-3">输出 Token</th><th className="px-5 py-3">总 Token</th></tr></thead>
+                  <tbody>{data.stats.by_model.map((item) => <tr key={item.model} className="border-b last:border-0"><td className="px-5 py-4 font-medium">{item.model}</td><td className="px-3 py-4">{formatNumber(item.requests)}</td><td className="px-3 py-4 text-emerald-600">{formatNumber(item.successful_requests)}</td><td className="px-3 py-4 text-rose-600">{formatNumber(item.failed_requests)}</td><td className="px-3 py-4">{item.requests ? `${Math.round(item.successful_requests / item.requests * 1000) / 10}%` : "-"}</td><td className="px-3 py-4">{displayToken(item.prompt_tokens, compact)}</td><td className="px-3 py-4 text-sky-600">{displayToken(item.cached_tokens, compact)}</td><td className="px-3 py-4">{displayToken(item.completion_tokens, compact)}</td><td className="px-5 py-4 font-medium">{displayToken(item.total_tokens, compact)}</td></tr>)}</tbody>
                 </table>
                 {data.stats.by_model.length === 0 && <div className="py-12 text-center text-sm text-muted-foreground">当前筛选条件下暂无调用记录</div>}
               </div>
